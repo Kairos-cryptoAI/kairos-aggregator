@@ -6,7 +6,8 @@ from collections import defaultdict, deque
 from typing import Deque, Dict
 
 from kairos_core.bus import build_bus
-from kairos_core.contracts import MarketSnapshot, RouterDecision, SentimentSignal
+from kairos_core.contracts import LLMHealthEvent, MarketSnapshot, RouterDecision, SentimentSignal
+
 from kairos_core.logging import configure_logging, get_logger
 from kairos_core.topics import Topics
 
@@ -23,10 +24,15 @@ class AggregatorService:
         self.bus = build_bus(self.settings)
         if gateway is None:
             from kairos_llm import LLMGateway
-            gateway = LLMGateway()
+            gateway = LLMGateway(on_health=self._publish_health)
         self.brain = AggregatorBrain(gateway, source=self.settings.service_name)
         self._snapshots: Dict[str, MarketSnapshot] = {}
         self._sentiments: Deque[SentimentSignal] = deque(maxlen=self.settings.max_sentiment_window)
+
+    async def _publish_health(self, model: str, provider: str, ok: bool, kind: str, latency_s: float) -> None:
+        await self.bus.publish(Topics.LLM_HEALTH, LLMHealthEvent(
+            source=self.settings.service_name, provider=provider, model=model,
+            ok=ok, kind=kind, latency_s=latency_s))
 
     async def _track_snapshots(self) -> None:
         async for env in self.bus.subscribe(Topics.MARKET_SNAPSHOT, group="aggregator", consumer="snap"):
