@@ -1,4 +1,9 @@
-"""Call the LLM gateway with the right effort and parse a TacticalCommand."""
+"""Call the LLM gateway with the right effort and parse a TacticalCommand.
+
+DeepSeek-first tactical tiers:
+  * MEDIUM (calm market)   -> DeepSeek-V4-Pro, the routine STABLE_TREND_ENTRY flow.
+  * HIGH   (signal conflict) -> GPT-5.5, weighing technicals vs. news flow.
+"""
 from __future__ import annotations
 
 from kairos_core.contracts import TacticalCommand
