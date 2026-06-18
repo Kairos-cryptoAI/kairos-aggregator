@@ -11,7 +11,7 @@ single tactical command. The Router decides how hard it thinks:
 `compile_context()` enforces the core rule — **the LLM never sees raw numbers**, only a
 small, rounded, decision-relevant JSON. Malformed model output always degrades to a safe
 `NO_TRADE` / `WAIT_CONFIRMATION` command. All model calls go through
-[`kairos-llm`](https://github.com/TheLitis/kairos-llm).
+[`kairos-llm`](https://github.com/Kairos-cryptoAI/kairos-llm).
 
 ## Run
 ```bash
@@ -22,4 +22,4 @@ python -m kairos_aggregator
 Consumes `kairos.router.decision` (+ snapshots & sentiment); emits `kairos.aggregator.command`.
 
 ---
-Part of the [Kairos](https://github.com/TheLitis/kairos) system. MIT licensed.
+Part of the [Kairos](https://github.com/Kairos-cryptoAI/kairos) system. MIT licensed.
