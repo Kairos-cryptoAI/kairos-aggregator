@@ -38,6 +38,9 @@ class AggregatorService:
         async for env in self.bus.subscribe(Topics.MARKET_SNAPSHOT, group="aggregator", consumer="snap"):
             try:
                 snap = MarketSnapshot.model_validate(env.payload)
+                if not self.settings.symbol_allowed(snap.symbol):
+                    log.warning("aggregator.symbol_rejected", symbol=snap.symbol)
+                    continue
                 self._snapshots[snap.symbol] = snap
             finally:
                 await self.bus.ack(Topics.MARKET_SNAPSHOT, env, group="aggregator")
@@ -53,6 +56,9 @@ class AggregatorService:
         async for env in self.bus.subscribe(Topics.ROUTER_DECISION, group="aggregator", consumer="router"):
             try:
                 decision = RouterDecision.model_validate(env.payload)
+                if not self.settings.symbol_allowed(decision.symbol):
+                    log.warning("aggregator.decision_symbol_rejected", symbol=decision.symbol)
+                    continue
                 snap = self._snapshots.get(decision.symbol)
                 if snap is None:
                     continue
