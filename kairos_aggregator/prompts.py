@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 OUTPUT_CONTRACT = """Return STRICT JSON:
-{"status": one of ["STABLE_TREND_ENTRY","HOLD_GRID","SHIFT_GRID","WAIT_CONFIRMATION","REDUCE_LEVERAGE","EXIT"],
- "reason_code": one of ["ENTER_LONG_TREND","ENTER_SHORT_TREND","HOLD","REDUCE_LEVERAGE","CLOSE_POSITION","REBALANCE","NO_TRADE"],
+{"status": one of ["STABLE_TREND_ENTRY","HOLD_GRID","SHIFT_GRID",
+                   "WAIT_CONFIRMATION","REDUCE_LEVERAGE","EXIT"],
+ "reason_code": one of ["ENTER_LONG_TREND","ENTER_SHORT_TREND","HOLD",
+                        "REDUCE_LEVERAGE","CLOSE_POSITION","REBALANCE","NO_TRADE"],
  "target_side": one of ["LONG","SHORT","FLAT"],
  "requested_leverage": number,
  "confidence": number in [0,1],

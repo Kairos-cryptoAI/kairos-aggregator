@@ -13,7 +13,8 @@ class FakeGateway:
 
 def test_valid_command_parsed():
     gw = FakeGateway({"status": "STABLE_TREND_ENTRY", "reason_code": "ENTER_LONG_TREND",
-                      "target_side": "LONG", "requested_leverage": 3, "confidence": 0.8, "rationale": "trend up"})
+                      "target_side": "LONG", "requested_leverage": 3, "confidence": 0.8,
+                      "rationale": "trend up"})
     cmd = asyncio.run(AggregatorBrain(gw).decide("BTCUSD", "{}", ReasoningEffort.MEDIUM))
     assert cmd.status is TacticalStatus.STABLE_TREND_ENTRY
     assert cmd.reason_code is ReasonCode.ENTER_LONG_TREND

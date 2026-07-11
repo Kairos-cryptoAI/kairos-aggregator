@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections import defaultdict, deque
+from collections import deque
 from typing import Deque, Dict
 
 from kairos_core.bus import build_bus
@@ -65,7 +65,9 @@ class AggregatorService:
                 await self.bus.ack(Topics.ROUTER_DECISION, env, group="aggregator")
 
     async def run(self) -> None:  # pragma: no cover - network
-        configure_logging(self.settings.log_level, json_logs=self.settings.log_json, service=self.settings.service_name)
+        configure_logging(
+            self.settings.log_level, json_logs=self.settings.log_json, service=self.settings.service_name
+        )
         log.info("aggregator.start")
         await asyncio.gather(self._track_snapshots(), self._track_sentiment(), self._on_router())
 
