@@ -58,6 +58,8 @@ class AggregatorService:
                     continue
                 ctx = compile_context(snap, list(self._sentiments), decision)
                 cmd = await self.brain.decide(decision.symbol, ctx, decision.requested_effort)
+                # Bind risk sizing to the same snapshot the model actually evaluated.
+                cmd = cmd.model_copy(update={"reference_price": snap.mid_price})
                 await self.bus.publish(Topics.TACTICAL_COMMAND, cmd)
                 log.info("aggregator.command", symbol=cmd.symbol, status=cmd.status.value,
                         reason=cmd.reason_code.value, effort=cmd.effort_used.value)
