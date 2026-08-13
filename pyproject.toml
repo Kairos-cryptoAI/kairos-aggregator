@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.28,<2"]
 build-backend = "hatchling.build"
 
 [project]
@@ -11,16 +11,29 @@ license = { text = "MIT" }
 requires-python = ">=3.11"
 authors = [{ name = "TheLitis" }]
 dependencies = [
-    "kairos-core>=0.1.0",
-    "kairos-llm>=0.1.0",
-    "redis>=5.0",
-    "structlog>=24.1",
-    "pydantic>=2.6",
-    "pydantic-settings>=2.2"
+    "kairos-core>=0.2,<0.3",
+    "kairos-llm>=0.1,<0.2",
+    "pydantic>=2.6,<3",
+    "pydantic-settings>=2.2,<3",
+    "redis>=6.4,<9",
+    "structlog>=24.1,<27",
 ]
 
-[project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.4", "mypy>=1.10"]
+[dependency-groups]
+dev = [
+    "bandit>=1.8,<2",
+    "mypy>=1.10,<3",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.16,<0.17",
+]
+
+[tool.uv]
+required-version = "==0.12.3"
+
+[tool.uv.sources]
+kairos-core = { git = "https://github.com/Kairos-cryptoAI/kairos-core.git", rev = "c2b9ba192521f9843b245e1eae8a501d408a6bfa" }
+kairos-llm = { git = "https://github.com/Kairos-cryptoAI/kairos-llm.git", rev = "b17167b21a2b498adae029246af2fe19b755e926" }
 
 [project.scripts]
 kairos-aggregator = "kairos_aggregator.service:main"
@@ -37,3 +50,8 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
