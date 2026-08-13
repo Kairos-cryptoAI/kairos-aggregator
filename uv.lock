@@ -563,7 +563,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "kairos-core", git = "https://github.com/Kairos-cryptoAI/kairos-core.git?rev=c2b9ba192521f9843b245e1eae8a501d408a6bfa" },
-    { name = "kairos-llm", git = "https://github.com/Kairos-cryptoAI/kairos-llm.git?rev=1f548c365b6b963e1d1d2b446381331da78bbfca" },
+    { name = "kairos-llm", git = "https://github.com/Kairos-cryptoAI/kairos-llm.git?rev=c6a8ff3902abc5df4ca95dbf3c72b114a086111a" },
     { name = "pydantic", specifier = ">=2.6,<3" },
     { name = "pydantic-settings", specifier = ">=2.2,<3" },
     { name = "redis", specifier = ">=6.4,<9" },
@@ -596,7 +596,7 @@ dependencies = [
 [[package]]
 name = "kairos-llm"
 version = "0.1.0"
-source = { git = "https://github.com/Kairos-cryptoAI/kairos-llm.git?rev=1f548c365b6b963e1d1d2b446381331da78bbfca#1f548c365b6b963e1d1d2b446381331da78bbfca" }
+source = { git = "https://github.com/Kairos-cryptoAI/kairos-llm.git?rev=c6a8ff3902abc5df4ca95dbf3c72b114a086111a#c6a8ff3902abc5df4ca95dbf3c72b114a086111a" }
 dependencies = [
     { name = "kairos-core" },
     { name = "openai" },

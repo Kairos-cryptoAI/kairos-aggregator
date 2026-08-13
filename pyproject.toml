@@ -33,7 +33,7 @@ required-version = "==0.12.3"
 
 [tool.uv.sources]
 kairos-core = { git = "https://github.com/Kairos-cryptoAI/kairos-core.git", rev = "c2b9ba192521f9843b245e1eae8a501d408a6bfa" }
-kairos-llm = { git = "https://github.com/Kairos-cryptoAI/kairos-llm.git", rev = "1f548c365b6b963e1d1d2b446381331da78bbfca" }
+kairos-llm = { git = "https://github.com/Kairos-cryptoAI/kairos-llm.git", rev = "c6a8ff3902abc5df4ca95dbf3c72b114a086111a" }
 
 [project.scripts]
 kairos-aggregator = "kairos_aggregator.service:main"
