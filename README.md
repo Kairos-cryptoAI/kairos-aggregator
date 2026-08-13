@@ -7,6 +7,25 @@ selection belong to `kairos-llm`, while the router's domain-level
 `ReasoningEffort` is preserved in `TacticalCommand.effort_used`. Invalid model
 output always becomes a deterministic `NO_TRADE` / `WAIT_CONFIRMATION` command.
 
+## Evidence and abstention semantics
+
+- A router decision is evaluated only against its exact `snapshot_id` and
+  `sentiment_ids`; unrelated signals that happen to be in memory cannot change a
+  replayed decision.
+- Out-of-order decisions remain unacknowledged until their referenced evidence
+  arrives. Seen-but-evicted evidence, stale snapshots/decisions, future timestamps,
+  symbol mismatches, and quant-provenance mismatches produce a deterministic
+  `NO_TRADE` without an LLM call.
+- Sentiment messages are deduplicated by `message_id`, ordered newest-first with a
+  stable ID tie-break, and confidence-calibrated as `sentiment * confidence`.
+  Neutral-impact or impact/sign-contradictory evidence contributes zero directional
+  score. The derived bias must match the Router decision; the shared deployment
+  defaults are `KAIROS_SENTIMENT_MIN_CONFIDENCE=0.25` and
+  `KAIROS_SENTIMENT_DEADBAND=0.25`.
+- Model status/reason/side combinations are validated as one semantic unit. New
+  entries and rebalances below `KAIROS_MIN_ENTRY_CONFIDENCE` abstain; protective
+  `REDUCE_LEVERAGE` and `EXIT` outputs are not blocked by that entry threshold.
+
 ## Local development
 
 The project is locked with `uv` 0.12.3, defaults to Python 3.11 and is also

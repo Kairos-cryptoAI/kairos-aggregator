@@ -1,7 +1,10 @@
 """Aggregator service wiring and cross-layer price propagation."""
 
 import asyncio
+import json
+from datetime import UTC, datetime, timedelta
 
+import pytest
 from kairos_core.bus import BusEnvelope
 from kairos_core.contracts import (
     DerivativesMetrics,
@@ -17,6 +20,7 @@ from kairos_core.enums import (
     ReasonCode,
     ReasoningEffort,
     RouterMode,
+    Side,
     SystemMode,
     TacticalStatus,
 )
@@ -78,32 +82,48 @@ class _FakeGateway:
         self.closed = True
 
 
-def _snapshot():
-    return MarketSnapshot(
-        source="quant",
-        symbol="BTCUSDT",
-        mid_price=65_000,
-        order_book=OrderBookSummary(
+def _snapshot(*, produced_at: datetime | None = None, message_id: str | None = None):
+    values = {
+        "source": "quant",
+        "symbol": "BTCUSDT",
+        "mid_price": 65_000,
+        "order_book": OrderBookSummary(
             best_bid=64_999,
             best_ask=65_001,
             spread_bps=0.3,
             imbalance=0.2,
             depth_usd=500_000,
         ),
-        volume_usd=1_000_000,
-        derivatives=DerivativesMetrics(funding_rate=0.0001, open_interest=10_000_000),
-        indicators=TechnicalIndicators(rsi_14=55, macd=1.0, macd_signal=0.8, macd_hist=0.2),
-    )
+        "volume_usd": 1_000_000,
+        "derivatives": DerivativesMetrics(funding_rate=0.0001, open_interest=10_000_000),
+        "indicators": TechnicalIndicators(rsi_14=55, macd=1.0, macd_signal=0.8, macd_hist=0.2),
+    }
+    if produced_at is not None:
+        values["produced_at"] = produced_at
+    if message_id is not None:
+        values["message_id"] = message_id
+    return MarketSnapshot(**values)
 
 
-def _decision(*, snapshot_id: str, conflict: bool = False):
-    return RouterDecision(
-        source="router",
-        symbol="BTCUSDT",
-        mode=RouterMode.ROUTE_GPT if conflict else RouterMode.ROUTE_PRO,
-        requested_effort=ReasoningEffort.HIGH if conflict else ReasoningEffort.MEDIUM,
-        snapshot_id=snapshot_id,
-    )
+def _decision(
+    *,
+    snapshot_id: str,
+    conflict: bool = False,
+    produced_at: datetime | None = None,
+    sentiment_ids: list[str] | None = None,
+):
+    values = {
+        "source": "router",
+        "symbol": "BTCUSDT",
+        "mode": RouterMode.ROUTE_GPT if conflict else RouterMode.ROUTE_PRO,
+        "requested_effort": ReasoningEffort.HIGH if conflict else ReasoningEffort.MEDIUM,
+        "snapshot_id": snapshot_id,
+        "sentiment_ids": sentiment_ids or [],
+        "text_bias": Side.LONG if sentiment_ids else Side.FLAT,
+    }
+    if produced_at is not None:
+        values["produced_at"] = produced_at
+    return RouterDecision(**values)
 
 
 def test_gateway_health_hook_is_wired():
@@ -132,6 +152,53 @@ def test_router_decision_forwards_snapshot_price_to_risk_command():
     topic, command = svc.bus.calls[0]
     assert topic == Topics.TACTICAL_COMMAND
     assert command.reference_price == snapshot.mid_price
+
+
+def test_snapshot_replay_is_immutable_and_changed_payload_is_rejected():
+    now = datetime(2026, 8, 13, 12, tzinfo=UTC)
+    svc = AggregatorService(
+        AggregatorSettings(bus_backend="memory"),
+        gateway=_FakeGateway(),
+        clock=lambda: now,
+    )
+    original = _snapshot(produced_at=now, message_id="immutable")
+    envelope = BusEnvelope(
+        id="original",
+        topic=Topics.MARKET_SNAPSHOT,
+        payload=original.to_payload(),
+    )
+
+    asyncio.run(svc._handle_snapshot(envelope))
+    asyncio.run(svc._handle_snapshot(envelope))
+
+    assert svc._snapshots_by_id[original.message_id].mid_price == original.mid_price
+
+    changed_price = original.model_copy(update={"mid_price": original.mid_price + 1})
+    with pytest.raises(ValueError, match="message_id .* was reused"):
+        asyncio.run(
+            svc._handle_snapshot(
+                BusEnvelope(
+                    id="changed-price",
+                    topic=Topics.MARKET_SNAPSHOT,
+                    payload=changed_price.to_payload(),
+                )
+            )
+        )
+
+    changed_symbol = original.model_copy(update={"symbol": "ETHUSDT"})
+    with pytest.raises(ValueError, match="message_id .* was reused"):
+        asyncio.run(
+            svc._handle_snapshot(
+                BusEnvelope(
+                    id="changed-symbol",
+                    topic=Topics.MARKET_SNAPSHOT,
+                    payload=changed_symbol.to_payload(),
+                )
+            )
+        )
+
+    assert svc._snapshots_by_id[original.message_id] == original
+    assert "ETHUSDT" not in svc._snapshots
 
 
 def test_router_message_is_not_acked_when_publish_fails():
@@ -204,7 +271,7 @@ def test_router_decision_waits_for_its_exact_snapshot():
 
     assert bus.calls == []
     assert bus.acks == []
-    assert expected.message_id in svc._pending_decisions
+    assert decision_envelope.payload["message_id"] in svc._pending_decisions
 
     snapshot_envelope = BusEnvelope(
         id="snapshot-bus",
@@ -216,7 +283,7 @@ def test_router_decision_waits_for_its_exact_snapshot():
     _, command = bus.calls[0]
     assert command.reference_price == expected.mid_price
     assert bus.acks == [(Topics.ROUTER_DECISION, "router-deferred")]
-    assert expected.message_id not in svc._pending_decisions
+    assert decision_envelope.payload["message_id"] not in svc._pending_decisions
 
 
 def test_router_message_waits_unacked_for_missing_snapshot():
@@ -232,6 +299,347 @@ def test_router_message_waits_unacked_for_missing_snapshot():
 
     assert svc.bus.calls == []
     assert svc.bus.acks == []
+
+
+def test_stale_router_decision_abstains_without_waiting_for_missing_evidence():
+    now = datetime(2026, 8, 13, 12, tzinfo=UTC)
+    svc = AggregatorService(
+        AggregatorSettings(bus_backend="memory", router_decision_ttl_s=60),
+        gateway=_FakeGateway(),
+        clock=lambda: now,
+    )
+    brain = _FakeBrain()
+    svc.brain = brain
+    decision = _decision(
+        snapshot_id="never-arrived",
+        produced_at=now - timedelta(seconds=61),
+        sentiment_ids=["also-missing"],
+    )
+    envelope = BusEnvelope(id="router", topic=Topics.ROUTER_DECISION, payload=decision.to_payload())
+    svc.bus = _SpyBus(envelope)
+
+    asyncio.run(svc._on_router())
+
+    assert brain.calls == []
+    assert svc.bus.acks == [(Topics.ROUTER_DECISION, "router")]
+    assert decision.message_id not in svc._pending_decisions
+    _, command = svc.bus.calls[0]
+    assert command.reason_code is ReasonCode.NO_TRADE
+    assert command.reference_price == 0.0
+
+
+def test_only_router_referenced_sentiment_enters_context():
+    now = datetime(2026, 8, 13, 12, tzinfo=UTC)
+    svc = AggregatorService(
+        AggregatorSettings(bus_backend="memory"),
+        gateway=_FakeGateway(),
+        clock=lambda: now,
+    )
+    brain = _FakeBrain()
+    svc.brain = brain
+    snapshot = _snapshot(produced_at=now, message_id="snapshot")
+    svc._snapshots_by_id[snapshot.message_id] = snapshot
+    referenced = SentimentSignal(
+        message_id="sentiment-referenced",
+        produced_at=now - timedelta(seconds=1),
+        source="text-scouts",
+        topic="ETF",
+        sentiment=0.8,
+        confidence=0.75,
+        impact=ImpactDirection.BULLISH,
+    )
+    unrelated = SentimentSignal(
+        message_id="sentiment-unrelated",
+        produced_at=now,
+        source="text-scouts",
+        topic="rates",
+        sentiment=-0.9,
+        confidence=0.9,
+        impact=ImpactDirection.BEARISH,
+    )
+    for signal in (referenced, unrelated):
+        svc._sentiments_by_id[signal.message_id] = signal
+        svc._remember(svc._processed_sentiment, signal.message_id)
+    decision = _decision(
+        snapshot_id=snapshot.message_id,
+        produced_at=now,
+        sentiment_ids=[referenced.message_id],
+    )
+    envelope = BusEnvelope(id="router", topic=Topics.ROUTER_DECISION, payload=decision.to_payload())
+    svc.bus = _SpyBus(envelope)
+
+    asyncio.run(svc._on_router())
+
+    context = json.loads(brain.calls[0][1])
+    assert context["provenance"]["sentiment_ids"] == [referenced.message_id]
+    assert [item["message_id"] for item in context["news"]] == [referenced.message_id]
+
+
+def test_router_text_bias_must_match_confidence_calibrated_evidence():
+    now = datetime(2026, 8, 13, 12, tzinfo=UTC)
+    svc = AggregatorService(
+        AggregatorSettings(bus_backend="memory"),
+        gateway=_FakeGateway(),
+        clock=lambda: now,
+    )
+    brain = _FakeBrain()
+    svc.brain = brain
+    snapshot = _snapshot(produced_at=now, message_id="snapshot")
+    svc._snapshots_by_id[snapshot.message_id] = snapshot
+    bullish = SentimentSignal(
+        message_id="bullish",
+        produced_at=now,
+        source="text-scouts",
+        topic="ETF",
+        sentiment=0.8,
+        confidence=0.8,
+        impact=ImpactDirection.BULLISH,
+    )
+    svc._sentiments_by_id[bullish.message_id] = bullish
+    svc._remember(svc._processed_sentiment, bullish.message_id)
+    decision = _decision(
+        snapshot_id=snapshot.message_id,
+        produced_at=now,
+        sentiment_ids=[bullish.message_id],
+    ).model_copy(update={"text_bias": Side.SHORT})
+    envelope = BusEnvelope(id="router", topic=Topics.ROUTER_DECISION, payload=decision.to_payload())
+    svc.bus = _SpyBus(envelope)
+
+    asyncio.run(svc._on_router())
+
+    assert brain.calls == []
+    _, command = svc.bus.calls[0]
+    assert command.reason_code is ReasonCode.NO_TRADE
+    assert "does not match calibrated evidence LONG" in command.rationale
+
+
+def test_router_decision_waits_for_exact_sentiment_then_retries():
+    now = datetime(2026, 8, 13, 12, tzinfo=UTC)
+    svc = AggregatorService(
+        AggregatorSettings(bus_backend="memory"),
+        gateway=_FakeGateway(),
+        clock=lambda: now,
+    )
+    brain = _FakeBrain()
+    svc.brain = brain
+    snapshot = _snapshot(produced_at=now, message_id="snapshot")
+    svc._snapshots_by_id[snapshot.message_id] = snapshot
+    decision = _decision(
+        snapshot_id=snapshot.message_id,
+        produced_at=now,
+        sentiment_ids=["sentiment-late"],
+    )
+    router_envelope = BusEnvelope(
+        id="router-late",
+        topic=Topics.ROUTER_DECISION,
+        payload=decision.to_payload(),
+    )
+    svc.bus = _SpyBus(router_envelope)
+
+    asyncio.run(svc._on_router())
+
+    assert brain.calls == []
+    assert svc.bus.acks == []
+    assert decision.message_id in svc._pending_decisions
+
+    sentiment = SentimentSignal(
+        message_id="sentiment-late",
+        produced_at=now - timedelta(seconds=1),
+        source="text-scouts",
+        topic="ETF",
+        sentiment=0.7,
+        confidence=0.8,
+        impact=ImpactDirection.BULLISH,
+    )
+    sentiment_envelope = BusEnvelope(
+        id="sentiment-envelope",
+        topic=Topics.SENTIMENT_SIGNAL,
+        payload=sentiment.to_payload(),
+    )
+    asyncio.run(svc._handle_sentiment(sentiment_envelope))
+
+    assert len(brain.calls) == 1
+    assert svc.bus.acks == [(Topics.ROUTER_DECISION, "router-late")]
+    assert decision.message_id not in svc._pending_decisions
+
+
+def test_oversized_router_evidence_abstains_instead_of_silently_truncating():
+    now = datetime(2026, 8, 13, 12, tzinfo=UTC)
+    svc = AggregatorService(
+        AggregatorSettings(bus_backend="memory", max_sentiment_window=2),
+        gateway=_FakeGateway(),
+        clock=lambda: now,
+    )
+    brain = _FakeBrain()
+    svc.brain = brain
+    snapshot = _snapshot(produced_at=now, message_id="snapshot")
+    svc._snapshots_by_id[snapshot.message_id] = snapshot
+    decision = _decision(
+        snapshot_id=snapshot.message_id,
+        produced_at=now,
+        sentiment_ids=["one", "two", "three"],
+    )
+    envelope = BusEnvelope(id="router", topic=Topics.ROUTER_DECISION, payload=decision.to_payload())
+    svc.bus = _SpyBus(envelope)
+
+    asyncio.run(svc._on_router())
+
+    assert brain.calls == []
+    assert decision.message_id not in svc._pending_decisions
+    _, command = svc.bus.calls[0]
+    assert command.reason_code is ReasonCode.NO_TRADE
+    assert "referenced 3 sentiment signals; maximum is 2" in command.rationale
+
+
+def test_stale_snapshot_abstains_without_calling_model():
+    now = datetime(2026, 8, 13, 12, tzinfo=UTC)
+    settings = AggregatorSettings(bus_backend="memory", snapshot_ttl_s=60)
+    svc = AggregatorService(settings, gateway=_FakeGateway(), clock=lambda: now)
+    brain = _FakeBrain()
+    svc.brain = brain
+    snapshot = _snapshot(produced_at=now - timedelta(seconds=61), message_id="stale")
+    svc._snapshots_by_id[snapshot.message_id] = snapshot
+    decision = _decision(snapshot_id=snapshot.message_id, produced_at=now)
+    envelope = BusEnvelope(id="router", topic=Topics.ROUTER_DECISION, payload=decision.to_payload())
+    svc.bus = _SpyBus(envelope)
+
+    asyncio.run(svc._on_router())
+
+    assert brain.calls == []
+    _, command = svc.bus.calls[0]
+    assert command.reason_code is ReasonCode.NO_TRADE
+    assert command.confidence == 0.0
+    assert command.effort_used is ReasoningEffort.MEDIUM
+    assert "market snapshot is stale" in command.rationale
+
+
+def test_future_sentiment_abstains_without_calling_model():
+    now = datetime(2026, 8, 13, 12, tzinfo=UTC)
+    svc = AggregatorService(
+        AggregatorSettings(bus_backend="memory", max_future_skew_s=1),
+        gateway=_FakeGateway(),
+        clock=lambda: now,
+    )
+    brain = _FakeBrain()
+    svc.brain = brain
+    snapshot = _snapshot(produced_at=now, message_id="snapshot")
+    svc._snapshots_by_id[snapshot.message_id] = snapshot
+    future = SentimentSignal(
+        message_id="future",
+        produced_at=now + timedelta(seconds=2),
+        source="text-scouts",
+        topic="ETF",
+        sentiment=0.8,
+        confidence=0.8,
+        impact=ImpactDirection.BULLISH,
+    )
+    svc._sentiments_by_id[future.message_id] = future
+    svc._remember(svc._processed_sentiment, future.message_id)
+    decision = _decision(
+        snapshot_id=snapshot.message_id,
+        produced_at=now,
+        sentiment_ids=[future.message_id],
+    )
+    envelope = BusEnvelope(id="router", topic=Topics.ROUTER_DECISION, payload=decision.to_payload())
+    svc.bus = _SpyBus(envelope)
+
+    asyncio.run(svc._on_router())
+
+    assert brain.calls == []
+    _, command = svc.bus.calls[0]
+    assert command.reason_code is ReasonCode.NO_TRADE
+    assert "postdates snapshot" in command.rationale
+
+
+def test_sentiment_one_second_after_snapshot_only_applies_to_later_snapshot():
+    snapshot_at = datetime(2026, 8, 13, 12, tzinfo=UTC)
+    signal_at = snapshot_at + timedelta(seconds=1)
+    svc = AggregatorService(
+        AggregatorSettings(bus_backend="memory"),
+        gateway=_FakeGateway(),
+        clock=lambda: signal_at,
+    )
+    brain = _FakeBrain()
+    svc.brain = brain
+    current = _snapshot(produced_at=snapshot_at, message_id="snapshot-current")
+    later = _snapshot(produced_at=signal_at, message_id="snapshot-later")
+    svc._snapshots_by_id[current.message_id] = current
+    svc._snapshots_by_id[later.message_id] = later
+    signal = SentimentSignal(
+        message_id="sentiment-plus-one",
+        produced_at=signal_at,
+        source="text-scouts",
+        topic="ETF",
+        sentiment=0.8,
+        confidence=0.8,
+        impact=ImpactDirection.BULLISH,
+    )
+    svc._sentiments_by_id[signal.message_id] = signal
+    svc._remember(svc._processed_sentiment, signal.message_id)
+    current_decision = _decision(
+        snapshot_id=current.message_id,
+        produced_at=signal_at,
+        sentiment_ids=[signal.message_id],
+    )
+    later_decision = _decision(
+        snapshot_id=later.message_id,
+        produced_at=signal_at,
+        sentiment_ids=[signal.message_id],
+    )
+    svc.bus = _SpyBus(None)
+
+    asyncio.run(
+        svc._handle_router(
+            BusEnvelope(
+                id="current-decision",
+                topic=Topics.ROUTER_DECISION,
+                payload=current_decision.to_payload(),
+            )
+        )
+    )
+    asyncio.run(
+        svc._handle_router(
+            BusEnvelope(
+                id="later-decision",
+                topic=Topics.ROUTER_DECISION,
+                payload=later_decision.to_payload(),
+            )
+        )
+    )
+
+    assert len(brain.calls) == 1
+    assert json.loads(brain.calls[0][1])["provenance"]["snapshot_id"] == later.message_id
+    assert svc.bus.calls[0][1].reason_code is ReasonCode.NO_TRADE
+
+
+def test_snapshot_one_second_after_decision_is_strictly_noncausal():
+    decision_at = datetime(2026, 8, 13, 12, tzinfo=UTC)
+    snapshot_at = decision_at + timedelta(seconds=1)
+    svc = AggregatorService(
+        AggregatorSettings(bus_backend="memory"),
+        gateway=_FakeGateway(),
+        clock=lambda: snapshot_at,
+    )
+    brain = _FakeBrain()
+    svc.brain = brain
+    snapshot = _snapshot(produced_at=snapshot_at, message_id="snapshot-plus-one")
+    svc._snapshots_by_id[snapshot.message_id] = snapshot
+    early = _decision(snapshot_id=snapshot.message_id, produced_at=decision_at)
+    causal = _decision(snapshot_id=snapshot.message_id, produced_at=snapshot_at)
+    svc.bus = _SpyBus(None)
+
+    asyncio.run(
+        svc._handle_router(BusEnvelope(id="early", topic=Topics.ROUTER_DECISION, payload=early.to_payload()))
+    )
+    asyncio.run(
+        svc._handle_router(
+            BusEnvelope(id="causal", topic=Topics.ROUTER_DECISION, payload=causal.to_payload())
+        )
+    )
+
+    assert svc.bus.calls[0][1].reason_code is ReasonCode.NO_TRADE
+    assert "postdates router decision" in svc.bus.calls[0][1].rationale
+    assert len(brain.calls) == 1
 
 
 def test_text_local_filter_clears_old_sentiment_and_acks_control():
