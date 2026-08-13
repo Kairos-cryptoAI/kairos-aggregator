@@ -1,14 +1,17 @@
-"""Call the LLM gateway with the right effort and parse a TacticalCommand.
+"""Call the LLM gateway with an explicit role and parse a TacticalCommand.
 
-DeepSeek-first tactical tiers:
-  * MEDIUM (calm market)   -> DeepSeek-V4-Pro, the routine STABLE_TREND_ENTRY flow.
-  * HIGH   (signal conflict) -> GPT-5.6 Sol, weighing technicals vs. news flow.
+The workload selects the architecture-owned provider/model route independently
+of the domain ``ReasoningEffort`` retained on the resulting command:
+
+* ``AGGREGATOR_NORMAL`` for calm-market decisions.
+* ``AGGREGATOR_CONFLICT`` for conflicting quant and text signals.
 """
 
 from __future__ import annotations
 
 from kairos_core.contracts import GridAdjustment, TacticalCommand
 from kairos_core.enums import ReasonCode, ReasoningEffort, Side, TacticalStatus
+from kairos_llm import LLMWorkload
 from pydantic import BaseModel, ConfigDict, Field
 
 from .prompts import CONFLICT_SYSTEM, NORMAL_SYSTEM
@@ -54,12 +57,14 @@ class AggregatorBrain:
         self.source = source
 
     async def decide(self, symbol: str, context_json: str, effort: ReasoningEffort) -> TacticalCommand:
-        system = CONFLICT_SYSTEM if effort is ReasoningEffort.HIGH else NORMAL_SYSTEM
+        conflict = effort is ReasoningEffort.HIGH
+        system = CONFLICT_SYSTEM if conflict else NORMAL_SYSTEM
+        workload = LLMWorkload.AGGREGATOR_CONFLICT if conflict else LLMWorkload.AGGREGATOR_NORMAL
         try:
             result = await self.gateway.complete(
                 system=system,
                 user=context_json,
-                effort=effort,
+                workload=workload,
                 schema=TacticalModelOutput,
             )
             output = (

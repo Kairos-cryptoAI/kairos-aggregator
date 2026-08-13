@@ -1,9 +1,11 @@
 # kairos-aggregator
 
 Layer 3 of Kairos fuses a compact market snapshot and text sentiment into one
-tactical command. Calm decisions use the medium-effort DeepSeek route; signal
-conflicts use the high-effort GPT route. Invalid model output always becomes a
-deterministic `NO_TRADE` / `WAIT_CONFIRMATION` command.
+tactical command. Calm decisions select the explicit `AGGREGATOR_NORMAL` LLM
+workload; signal conflicts select `AGGREGATOR_CONFLICT`. Provider and model
+selection belong to `kairos-llm`, while the router's domain-level
+`ReasoningEffort` is preserved in `TacticalCommand.effort_used`. Invalid model
+output always becomes a deterministic `NO_TRADE` / `WAIT_CONFIRMATION` command.
 
 ## Local development
 
@@ -34,8 +36,8 @@ Failures remain unacknowledged for Redis Streams recovery.
 - `TEXT_LOCAL_FILTER` clears pre-outage sentiment and marks subsequent local
   signals as degraded. Their sentiment is weighted by their confidence before
   it enters the compact LLM context.
-- `CONFLICT_SAFE` suppresses the unavailable high-effort conflict route and
-  emits `WAIT_CONFIRMATION`; the healthy medium-effort route remains available.
+- `CONFLICT_SAFE` suppresses the `AGGREGATOR_CONFLICT` workload and emits
+  `WAIT_CONFIRMATION`; the `AGGREGATOR_NORMAL` workload remains available.
 - `LOCAL_QUANT_MODE` suppresses every Aggregator LLM route.
 
 The runtime uses `asyncio.TaskGroup` for all four consumers. Shutdown cancels
