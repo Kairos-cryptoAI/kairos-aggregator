@@ -64,3 +64,10 @@ the group and closes both the message bus and LLM gateway.
 
 Consumes `kairos.router.decision` plus snapshots, sentiment and system control;
 emits `kairos.aggregator.command` and LLM health events.
+
+## Runtime delivery durability
+
+With Redis, consumed IDs, handler outputs and completion are committed through
+`kairos-persistence`; Redis is ACKed only after PostgreSQL commits. Configure
+`KAIROS_PERSISTENCE_DATABASE_URL` through the deployment secret provider. The
+in-memory backend intentionally bypasses persistence for local tests.

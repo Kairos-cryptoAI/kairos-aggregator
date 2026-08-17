@@ -20,6 +20,7 @@ from kairos_core.contracts import (
 from kairos_core.enums import ReasoningEffort, RouterMode, SystemMode
 from kairos_core.logging import configure_logging, get_logger
 from kairos_core.topics import Topics
+from kairos_persistence import DurableMessageBus
 
 from .compiler import calibrated_text_bias, compile_context
 from .config import AggregatorSettings
@@ -41,7 +42,12 @@ class AggregatorService:
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.settings = settings or AggregatorSettings()
-        self.bus = build_bus(self.settings)
+        transport = build_bus(self.settings)
+        self.bus = (
+            transport
+            if self.settings.bus_backend == "memory"
+            else DurableMessageBus(transport, service_name=self.settings.service_name)
+        )
         if gateway is None:
             from kairos_llm import LLMGateway
 

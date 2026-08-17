@@ -13,6 +13,7 @@ authors = [{ name = "TheLitis" }]
 dependencies = [
     "kairos-core>=0.2,<0.3",
     "kairos-llm>=0.1,<0.2",
+    "kairos-persistence>=0.1,<0.2",
     "pydantic>=2.6,<3",
     "pydantic-settings>=2.2,<3",
     "redis>=6.4,<9",
@@ -34,6 +35,7 @@ required-version = "==0.12.3"
 [tool.uv.sources]
 kairos-core = { git = "https://github.com/Kairos-cryptoAI/kairos-core.git", rev = "c2b9ba192521f9843b245e1eae8a501d408a6bfa" }
 kairos-llm = { git = "https://github.com/Kairos-cryptoAI/kairos-llm.git", rev = "c6a8ff3902abc5df4ca95dbf3c72b114a086111a" }
+kairos-persistence = { git = "https://github.com/Kairos-cryptoAI/kairos-persistence.git", rev = "5709e7b8a1f9a11bc1727c2c23e39cdcd683f909" }
 
 [project.scripts]
 kairos-aggregator = "kairos_aggregator.service:main"
