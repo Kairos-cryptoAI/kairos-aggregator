@@ -25,6 +25,8 @@ from kairos_core.enums import (
     TacticalStatus,
 )
 from kairos_core.topics import Topics
+from kairos_llm import BudgetedLLMGateway, DenyLLMUsageBudget
+from kairos_persistence import DurableLLMUsageBudget
 
 from kairos_aggregator.config import AggregatorSettings
 from kairos_aggregator.service import AggregatorService
@@ -128,7 +130,14 @@ def _decision(
 
 def test_gateway_health_hook_is_wired():
     svc = AggregatorService(AggregatorSettings(bus_backend="memory"))
+    assert isinstance(svc.brain.gateway, BudgetedLLMGateway)
+    assert isinstance(svc.brain.gateway.budget, DenyLLMUsageBudget)
     assert svc.brain.gateway._on_health is not None
+
+
+def test_durable_runtime_wires_shared_provider_budget():
+    svc = AggregatorService(AggregatorSettings(bus_backend="redis"))
+    assert isinstance(svc.brain.gateway.budget, DurableLLMUsageBudget)
 
 
 def test_router_decision_forwards_snapshot_price_to_risk_command():

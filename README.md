@@ -26,6 +26,11 @@ output always becomes a deterministic `NO_TRADE` / `WAIT_CONFIRMATION` command.
   entries and rebalances below `KAIROS_MIN_ENTRY_CONFIDENCE` abstain; protective
   `REDUCE_LEVERAGE` and `EXIT` outputs are not blocked by that entry threshold.
 
+All Luna/Terra calls reserve capacity in the shared PostgreSQL
+`kairos-llm-v1/openai` ledger before contacting OpenAI. The provider-wide
+runtime ceiling is `$45`; in-memory runtimes deny paid calls. Automatic model
+retry is disabled so an ambiguous response cannot silently spend twice.
+
 ## Local development
 
 The project is locked with `uv` 0.12.3, defaults to Python 3.11 and is also
