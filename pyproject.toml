@@ -4,14 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kairos-aggregator"
-version = "0.1.0"
-description = "Kairos Layer 3 — tactical decision brain (medium/high reasoning)."
+version = "0.2.0"
+description = "Kairos Layer 3 — immutable candidate review and legacy tactical aggregation."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
 authors = [{ name = "TheLitis" }]
 dependencies = [
-    "kairos-core>=0.2,<0.3",
+    "kairos-core>=0.3,<0.4",
     "kairos-llm>=0.1,<0.2",
     "kairos-persistence>=0.1,<0.2",
     "pydantic>=2.6,<3",
@@ -33,12 +33,13 @@ dev = [
 required-version = "==0.12.3"
 
 [tool.uv.sources]
-kairos-core = { git = "https://github.com/Kairos-cryptoAI/kairos-core.git", rev = "c2b9ba192521f9843b245e1eae8a501d408a6bfa" }
-kairos-llm = { git = "https://github.com/Kairos-cryptoAI/kairos-llm.git", rev = "343413af296adc3d9a80da9e3627f14f552285b7" }
-kairos-persistence = { git = "https://github.com/Kairos-cryptoAI/kairos-persistence.git", rev = "174cec82c3a67beab24090c51a4bae7ded2ca4e1" }
+kairos-core = { git = "https://github.com/Kairos-cryptoAI/kairos-core.git", rev = "a4f427cdd44184fac62a842320133ac5a3e11fbe" }
+kairos-llm = { git = "https://github.com/Kairos-cryptoAI/kairos-llm.git", rev = "0777bbbcc541e2ac95d2fe965c1c2201845de17c" }
+kairos-persistence = { git = "https://github.com/Kairos-cryptoAI/kairos-persistence.git", rev = "48a26a9b0f7b14ceae5a3f19b3c403c10a08f255" }
 
 [project.scripts]
 kairos-aggregator = "kairos_aggregator.service:main"
+kairos-candidate-review = "kairos_aggregator.candidate_service:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["kairos_aggregator"]

@@ -1,11 +1,38 @@
 # kairos-aggregator
 
-Layer 3 of Kairos fuses a compact market snapshot and text sentiment into one
-tactical command. Calm decisions select the explicit `AGGREGATOR_NORMAL` LLM
+Layer 3 has two deliberately separate entry points. The Strategy Parity path
+reviews an immutable `CandidateRouteV1` and can return only `ALLOW`, `VETO`,
+`DEFER` and a priority. The legacy DRY_RUN path still fuses a compact market
+snapshot and text sentiment into a tactical command. Calm decisions select the explicit `AGGREGATOR_NORMAL` LLM
 workload; signal conflicts select `AGGREGATOR_CONFLICT`. Provider and model
 selection belong to `kairos-llm`, while the router's domain-level
 `ReasoningEffort` is preserved in `TacticalCommand.effort_used`. Invalid model
 output always becomes a deterministic `NO_TRADE` / `WAIT_CONFIRMATION` command.
+
+## Immutable candidate review
+
+Run `uv run --locked kairos-candidate-review` for the Strategy Parity/shadow
+consumer:
+
+```text
+kairos.strategy.route.v1 -> Candidate Review -> kairos.strategy.review.v1
+```
+
+- The complete Strategy Intent is carried into the review unchanged; strict
+  contracts reject any mutation of side, stop, target, timeout or provenance.
+- The model schema contains only `decision`, `priority` and `reason_codes`.
+  Normal routes use Luna/medium and conflict routes use Terra/high.
+- Missing, stale or post-route evidence, disabled system modes, malformed output,
+  provider errors, incomplete paid-call provenance and missed deadlines terminate
+  the current intent as deterministic `DEFER` without an automatic second call.
+- Every successful LLM review records provider request ID, resolved model,
+  prompt/response hashes, durable budget reservation, latency and cost.
+- A publish retry reuses the cached review and never calls the model again.
+
+The candidate service enforces the qualification ceilings on the shared durable
+ledger: OpenAI `$12` and DeepSeek `$1`. The remaining `$2` X allocation is owned by
+Text Scouts. Technical EVEDEX canaries do not start this process and therefore make
+no LLM call.
 
 ## Evidence and abstention semantics
 
