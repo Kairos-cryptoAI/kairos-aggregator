@@ -34,6 +34,37 @@ ledger: OpenAI `$12` and DeepSeek `$1`. The remaining `$2` X allocation is owned
 Text Scouts. Technical EVEDEX canaries do not start this process and therefore make
 no LLM call.
 
+## Frozen-corpus shadow qualification
+
+`kairos-candidate-qualify` replays the packaged V1 corpus through the real candidate
+service boundary. The corpus covers normal support, a material conflict, untrusted
+prompt injection, a forbidden symbol, stale evidence, missing evidence and evidence
+that postdates the frozen route. It requires strict output, an unchanged intent,
+deadline completion, complete paid-call provenance and zero `ALLOW` decisions on
+deterministically forbidden cases.
+
+Validate the harness without a network request or spend:
+
+```sh
+uv run --locked kairos-candidate-qualify --static \
+  --output /tmp/kairos-candidate-harness.json
+```
+
+A real provider run additionally requires OpenAI, Redis and PostgreSQL one-value
+secret files. It reserves every Luna/Terra call in the shared durable
+`kairos-llm-v1/openai` ledger before network access and refuses a planned run above
+the configured ceiling (default `$0.10`, hard maximum `$0.25`). Reports are atomic,
+contain no prompts or credentials and always set `live_orders_allowed=false`:
+
+```sh
+uv run --locked kairos-candidate-qualify \
+  --openai-key-file /run/secrets/openai_api_key \
+  --redis-url-file /run/secrets/redis_url \
+  --database-url-file /run/secrets/persistence_database_url \
+  --maximum-planned-cost-usd 0.10 \
+  --output /tmp/kairos-candidate-live.json
+```
+
 ## Evidence and abstention semantics
 
 - A router decision is evaluated only against its exact `snapshot_id` and
@@ -55,7 +86,7 @@ no LLM call.
 
 All Luna/Terra calls reserve capacity in the shared PostgreSQL
 `kairos-llm-v1/openai` ledger before contacting OpenAI. The provider-wide
-runtime ceiling is `$45`; in-memory runtimes deny paid calls. Automatic model
+shadow ceiling is `$12`; in-memory runtimes deny paid calls. Automatic model
 retry is disabled so an ambiguous response cannot silently spend twice.
 
 ## Local development
