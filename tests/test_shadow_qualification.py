@@ -47,6 +47,23 @@ async def test_packaged_corpus_passes_network_free_safety_harness() -> None:
     assert all(item.cost_usd == 0 for item in report.observations)
 
 
+async def test_targeted_case_replay_calls_only_the_requested_workload() -> None:
+    corpus, digest = load_corpus()
+    report = await qualify_candidate_corpus(
+        corpus,
+        _ScriptedGateway(),
+        mode="STATIC_HARNESS",
+        corpus_sha256=digest,
+        maximum_planned_cost_usd=0.1,
+        now_ms=NOW_MS,
+        selected_case_ids=("conflict_official_invalidation",),
+    )
+    assert [item.case_id for item in report.observations] == ["conflict_official_invalidation"]
+    assert report.observations[0].model_called is True
+    with pytest.raises(ValueError, match="unknown corpus case"):
+        planned_cost_ceiling_usd(corpus, ("unknown",))
+
+
 class _UnsafeGateway:
     async def complete(self, **_kwargs) -> LLMResult:
         parsed = CandidateReviewOutput.model_validate(

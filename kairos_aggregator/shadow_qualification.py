@@ -65,7 +65,7 @@ from .config import AggregatorSettings
 DEFAULT_CORPUS_RESOURCE = "candidate_review_v1.json"
 DEFAULT_MAXIMUM_PLANNED_COST_USD = 0.10
 HARD_MAXIMUM_PLANNED_COST_USD = 0.25
-QUALIFICATION_MAX_OUTPUT_TOKENS = 256
+QUALIFICATION_MAX_OUTPUT_TOKENS = 1_024
 CASE_DEADLINE_MS = 30_000
 BASE_AGE_MS = 3_000
 
@@ -162,6 +162,7 @@ class CaseObservation:
     model: str | None
     latency_ms: int | None
     cost_usd: float
+    failure_kind: str | None
     reasons: tuple[str, ...]
 
 
@@ -209,16 +210,19 @@ class _ObservedGateway:
         self.gateway = gateway
         self.calls = 0
         self.schema_valid: list[bool] = []
+        self.failure_kinds: list[str | None] = []
 
     async def complete(self, **kwargs: Any) -> LLMResult:
         self.calls += 1
         try:
             result = await self.gateway.complete(**kwargs)
             CandidateReviewOutput.model_validate(result.parsed)
-        except Exception:
+        except Exception as exc:
             self.schema_valid.append(False)
+            self.failure_kinds.append(type(exc).__name__)
             raise
         self.schema_valid.append(True)
+        self.failure_kinds.append(None)
         return result
 
     async def close(self) -> None:
@@ -358,12 +362,14 @@ async def qualify_candidate_corpus(
     planned_cost_ceiling_usd: float = 0.0,
     maximum_planned_cost_usd: float = 0.0,
     now_ms: int | None = None,
+    selected_case_ids: Sequence[str] | None = None,
 ) -> CandidateQualificationReport:
     observed_gateway = _ObservedGateway(gateway)
     observations: list[CaseObservation] = []
     base_now_ms = now_ms if now_ms is not None else int(time.time() * 1_000)
 
-    for index, case in enumerate(corpus.cases):
+    selected = _select_cases(corpus, selected_case_ids)
+    for index, case in enumerate(selected):
         routed_at_ms = base_now_ms - BASE_AGE_MS + index
         route, evidence = _materialize(case, routed_at_ms=routed_at_ms)
         original_identity = route.intent.model_dump_json()
@@ -397,6 +403,8 @@ async def qualify_candidate_corpus(
         model_called = observed_gateway.calls == before_calls + 1
         schema_slice = observed_gateway.schema_valid[before_schema:]
         schema_valid = schema_slice[0] if model_called and len(schema_slice) == 1 else None
+        failure_slice = observed_gateway.failure_kinds[before_schema:]
+        failure_kind = failure_slice[0] if model_called and len(failure_slice) == 1 else None
         intent_preserved = bool(
             review is not None
             and review.intent.intent_id == route.intent.intent_id
@@ -443,6 +451,7 @@ async def qualify_candidate_corpus(
                 model=provenance.model if provenance is not None else None,
                 latency_ms=provenance.latency_ms if provenance is not None else None,
                 cost_usd=cost,
+                failure_kind=failure_kind,
                 reasons=tuple(reasons),
             )
         )
@@ -464,6 +473,7 @@ async def qualify_candidate_corpus(
                 model=None,
                 latency_ms=None,
                 cost_usd=0.0,
+                failure_kind=None,
                 reasons=("actual_cost_exceeded_planned_ceiling",),
             )
         )
@@ -484,11 +494,28 @@ async def qualify_candidate_corpus(
     )
 
 
-def planned_cost_ceiling_usd(corpus: CandidateCorpus) -> float:
+def _select_cases(
+    corpus: CandidateCorpus,
+    selected_case_ids: Sequence[str] | None,
+) -> tuple[CandidateCorpusCase, ...]:
+    if not selected_case_ids:
+        return corpus.cases
+    requested = tuple(dict.fromkeys(selected_case_ids))
+    by_id = {item.case_id: item for item in corpus.cases}
+    unknown = sorted(set(requested) - set(by_id))
+    if unknown:
+        raise ValueError(f"unknown corpus case IDs: {', '.join(unknown)}")
+    return tuple(by_id[item] for item in requested)
+
+
+def planned_cost_ceiling_usd(
+    corpus: CandidateCorpus,
+    selected_case_ids: Sequence[str] | None = None,
+) -> float:
     prices = PriceTable()
     total = 0.0
     routed_at_ms = 1_900_000_000_000
-    for case in corpus.cases:
+    for case in _select_cases(corpus, selected_case_ids):
         if not case.expected_model_call:
             continue
         route, evidence = _materialize(case, routed_at_ms=routed_at_ms)
@@ -570,6 +597,7 @@ async def _live_gateway(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corpus", type=Path)
+    parser.add_argument("--case", action="append", dest="case_ids")
     parser.add_argument("--static", action="store_true", help="validate the harness without network calls")
     parser.add_argument("--openai-key-file", type=Path)
     parser.add_argument("--redis-url-file", type=Path)
@@ -586,7 +614,7 @@ def _parser() -> argparse.ArgumentParser:
 
 async def _run(args: argparse.Namespace) -> CandidateQualificationReport:
     corpus, digest = load_corpus(args.corpus)
-    planned = planned_cost_ceiling_usd(corpus)
+    planned = planned_cost_ceiling_usd(corpus, args.case_ids)
     maximum = float(args.maximum_planned_cost_usd)
     if not math.isfinite(maximum) or maximum <= 0 or maximum > HARD_MAXIMUM_PLANNED_COST_USD:
         raise ValueError(f"maximum planned cost must be in (0, {HARD_MAXIMUM_PLANNED_COST_USD}] USD")
@@ -599,6 +627,7 @@ async def _run(args: argparse.Namespace) -> CandidateQualificationReport:
             mode="STATIC_HARNESS",
             corpus_sha256=digest,
             maximum_planned_cost_usd=maximum,
+            selected_case_ids=args.case_ids,
         )
     if not all((args.openai_key_file, args.redis_url_file, args.database_url_file)):
         raise ValueError("live qualification requires OpenAI, Redis and database secret files")
@@ -617,6 +646,7 @@ async def _run(args: argparse.Namespace) -> CandidateQualificationReport:
             corpus_sha256=digest,
             planned_cost_ceiling_usd=planned,
             maximum_planned_cost_usd=maximum,
+            selected_case_ids=args.case_ids,
         )
     finally:
         await gateway.close()

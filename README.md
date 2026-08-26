@@ -65,6 +65,10 @@ uv run --locked kairos-candidate-qualify \
   --output /tmp/kairos-candidate-live.json
 ```
 
+Use repeatable `--case CASE_ID` selectors after a failed run so a diagnostic retry
+cannot spend on cases that already passed. High-reasoning conflict qualification
+reserves a 1024-token output envelope; unused capacity is committed at actual cost.
+
 ## Evidence and abstention semantics
 
 - A router decision is evaluated only against its exact `snapshot_id` and
