@@ -218,6 +218,42 @@ async def test_conflict_route_uses_terra_workload_without_parameter_output() -> 
 
 
 @pytest.mark.asyncio
+async def test_strong_adverse_conflict_cannot_be_allowed_by_model() -> None:
+    gateway = _Gateway(
+        parsed={
+            "decision": "ALLOW",
+            "priority": 99,
+            "reason_codes": ["OFFICIAL_BEARISH_CONFIRMATION"],
+        }
+    )
+    route = _route(tier=CandidateReviewTier.CONFLICT, evidence_ids=("text-evidence-1",))
+    adverse = SentimentSignal(
+        source="text-scouts",
+        message_id="text-evidence-1",
+        produced_at=datetime.fromtimestamp((ROUTED_MS - 1_000) / 1_000, tz=UTC),
+        topic="BTCUSDT",
+        sentiment=-0.9,
+        impact=ImpactDirection.BEARISH,
+        confidence=0.95,
+        sources=["https://example.invalid/official"],
+        summary="Official evidence invalidates the long thesis.",
+    )
+    brain = CandidateReviewBrain(
+        gateway,
+        source="aggregator",
+        clock_ms=_Clock(ROUTED_MS + 1, ROUTED_MS + 2),
+    )
+
+    review = await brain.review(route, (adverse,))
+
+    assert review.decision is ReviewDecision.DEFER
+    assert review.priority == 0
+    assert review.reviewer == "LLM"
+    assert review.model_provenance is not None
+    assert "CONFLICT_ALLOW_GUARD" in review.reason_codes
+
+
+@pytest.mark.asyncio
 async def test_invalid_output_or_missing_provenance_is_terminal_defer() -> None:
     invalid = _Gateway(
         parsed={
