@@ -13,6 +13,7 @@ from kairos_aggregator.shadow_qualification import (
     HARD_MAXIMUM_PLANNED_COST_USD,
     CandidateCorpus,
     QualificationStatus,
+    _materialize,
     _ScriptedGateway,
     load_corpus,
     main,
@@ -64,6 +65,16 @@ async def test_targeted_case_replay_calls_only_the_requested_workload() -> None:
         planned_cost_ceiling_usd(corpus, ("unknown",))
 
 
+def test_conflict_fixture_materializes_the_declared_long_candidate() -> None:
+    corpus, _digest = load_corpus()
+    case = next(item for item in corpus.cases if item.case_id == "conflict_official_invalidation")
+
+    route, evidence = _materialize(case, routed_at_ms=NOW_MS)
+
+    assert route.intent.side.value == "LONG"
+    assert evidence[0].sentiment < 0
+
+
 class _UnsafeGateway:
     async def complete(self, **_kwargs) -> LLMResult:
         parsed = CandidateReviewOutput.model_validate(
@@ -84,7 +95,7 @@ class _UnsafeGateway:
         )
 
 
-async def test_corpus_fails_when_conflict_is_allowed_but_deterministic_cases_do_not_call_model() -> None:
+async def test_corpus_guard_defers_unsafe_conflict_allow_without_extra_model_calls() -> None:
     corpus, digest = load_corpus()
     report = await qualify_candidate_corpus(
         corpus,
@@ -96,10 +107,10 @@ async def test_corpus_fails_when_conflict_is_allowed_but_deterministic_cases_do_
         now_ms=NOW_MS,
     )
 
-    assert report.status is QualificationStatus.FAIL
+    assert report.status is QualificationStatus.PASS
     conflict = next(item for item in report.observations if item.category == "conflict")
-    assert conflict.decision == "ALLOW"
-    assert "decision_outside_expected_set" in conflict.reasons
+    assert conflict.decision == "DEFER"
+    assert conflict.reasons == ()
     deterministic = [item for item in report.observations if not item.model_called]
     assert len(deterministic) == 4
 

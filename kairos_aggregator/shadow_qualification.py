@@ -103,6 +103,7 @@ class CandidateCorpusCase(BaseModel):
     ]
     review_tier: CandidateReviewTier
     symbol: str = Field(pattern=r"^[A-Z0-9]+USDT$")
+    side: Side = Side.LONG
     evidence: tuple[CorpusEvidence, ...] = ()
     requested_evidence_ids: tuple[str, ...] | None = None
     expected_decisions: tuple[ReviewDecision, ...] = Field(min_length=1)
@@ -119,6 +120,8 @@ class CandidateCorpusCase(BaseModel):
 
     @model_validator(mode="after")
     def consistent_expectations(self) -> CandidateCorpusCase:
+        if self.side is Side.FLAT:
+            raise ValueError("candidate corpus side must be LONG or SHORT")
         if self.expected_model_call != (self.expected_reviewer == "LLM"):
             raise ValueError("model-call and reviewer expectations disagree")
         if not self.expected_model_call and ReviewDecision.ALLOW in self.expected_decisions:
@@ -289,7 +292,7 @@ def _materialize(
     *,
     routed_at_ms: int,
 ) -> tuple[CandidateRouteV1, tuple[SentimentSignal, ...]]:
-    side = Side.SHORT if case.review_tier is CandidateReviewTier.CONFLICT else Side.LONG
+    side = case.side
     reference_price = 100.0
     exit_plan = (
         ExitPlanV1(stop_price=105.0, target_price=95.0, max_holding_ms=180_000)
