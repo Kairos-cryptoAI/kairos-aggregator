@@ -43,6 +43,8 @@ from kairos_llm import (
     LLMGateway,
     LLMResult,
     LLMSettings,
+    LLMWorkload,
+    ModelRouter,
     Provider,
     TokenUsage,
 )
@@ -516,6 +518,7 @@ def planned_cost_ceiling_usd(
     selected_case_ids: Sequence[str] | None = None,
 ) -> float:
     prices = PriceTable()
+    router = ModelRouter()
     total = 0.0
     routed_at_ms = 1_900_000_000_000
     for case in _select_cases(corpus, selected_case_ids):
@@ -528,9 +531,13 @@ def planned_cost_ceiling_usd(
             context,
             CandidateReviewOutput,
         )
-        workload = "gpt-5.6-terra" if case.review_tier is CandidateReviewTier.CONFLICT else "gpt-5.6-luna"
-        total += prices.cost(
-            workload,
+        workload = (
+            LLMWorkload.AGGREGATOR_CONFLICT
+            if case.review_tier is CandidateReviewTier.CONFLICT
+            else LLMWorkload.AGGREGATOR_NORMAL
+        )
+        total += prices.reservation_cost(
+            router.resolve(workload=workload).choice.model,
             TokenUsage(
                 input_tokens=input_ceiling,
                 output_tokens=QUALIFICATION_MAX_OUTPUT_TOKENS,

@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 
 import pytest
-from kairos_llm import LLMResult, TokenUsage
+from kairos_core.enums import CandidateReviewTier
+from kairos_llm import LLMResult, PriceTable, TokenUsage
 
 from kairos_aggregator.candidate_review import CandidateReviewOutput
 from kairos_aggregator.shadow_qualification import (
@@ -83,14 +84,14 @@ class _UnsafeGateway:
         return LLMResult(
             content=parsed.model_dump_json(),
             parsed=parsed,
-            model="gpt-5.6-luna",
+            model="gpt-6-luna",
             effort="medium",
             usage=TokenUsage(input_tokens=10, output_tokens=10),
             cost_usd=0.001,
             latency_s=0.1,
             provider="openai",
             request_id="unsafe",
-            resolved_model="gpt-5.6-luna",
+            resolved_model="gpt-6-luna",
             budget_reservation_id="kairos-llm-v1:openai:unsafe",
         )
 
@@ -132,6 +133,26 @@ def test_planned_cost_is_positive_bounded_and_only_counts_model_cases() -> None:
     corpus, _digest = load_corpus()
     planned = planned_cost_ceiling_usd(corpus)
     assert 0 < planned < HARD_MAXIMUM_PLANNED_COST_USD
+
+
+def test_planned_cost_reserves_each_active_review_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[tuple[str, TokenUsage]] = []
+
+    def reserve(_self: PriceTable, model: str, usage: TokenUsage) -> float:
+        seen.append((model, usage))
+        return 0.001
+
+    monkeypatch.setattr(PriceTable, "reservation_cost", reserve)
+    corpus, _digest = load_corpus()
+    model_cases = [case for case in corpus.cases if case.expected_model_call]
+    expected_models = [
+        "gpt-6-sol" if case.review_tier is CandidateReviewTier.CONFLICT else "gpt-6-luna"
+        for case in model_cases
+    ]
+
+    assert planned_cost_ceiling_usd(corpus) == pytest.approx(len(model_cases) * 0.001)
+    assert [model for model, _usage in seen] == expected_models
+    assert all(usage.input_tokens > 0 and usage.output_tokens == 1_024 for _model, usage in seen)
 
 
 def test_atomic_report_writer_and_static_cli(tmp_path: Path) -> None:

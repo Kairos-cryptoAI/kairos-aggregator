@@ -21,7 +21,7 @@ kairos.strategy.route.v1 -> Candidate Review -> kairos.strategy.review.v1
 - The complete Strategy Intent is carried into the review unchanged; strict
   contracts reject any mutation of side, stop, target, timeout or provenance.
 - The model schema contains only `decision`, `priority` and `reason_codes`.
-  Normal routes use Luna/medium and conflict routes use Terra/high.
+  Normal routes use GPT-6 Luna/medium and conflict routes use GPT-6 Sol/high.
 - Missing, stale or post-route evidence, disabled system modes, malformed output,
   provider errors, incomplete paid-call provenance and missed deadlines terminate
   the current intent as deterministic `DEFER` without an automatic second call.
@@ -51,7 +51,7 @@ uv run --locked kairos-candidate-qualify --static \
 ```
 
 A real provider run additionally requires OpenAI, Redis and PostgreSQL one-value
-secret files. It reserves every Luna/Terra call in the shared durable
+secret files. It reserves every GPT-6 Luna/Sol call in the shared durable
 `kairos-llm-v1/openai` ledger before network access and refuses a planned run above
 the configured ceiling (default `$0.10`, hard maximum `$0.25`). Reports are atomic,
 contain no prompts or credentials and always set `live_orders_allowed=false`:
@@ -88,7 +88,7 @@ reserves a 1024-token output envelope; unused capacity is committed at actual co
   entries and rebalances below `KAIROS_MIN_ENTRY_CONFIDENCE` abstain; protective
   `REDUCE_LEVERAGE` and `EXIT` outputs are not blocked by that entry threshold.
 
-All Luna/Terra calls reserve capacity in the shared PostgreSQL
+All GPT-6 Luna/Sol calls reserve capacity in the shared PostgreSQL
 `kairos-llm-v1/openai` ledger before contacting OpenAI. The provider-wide
 shadow ceiling is `$12`; in-memory runtimes deny paid calls. Automatic model
 retry is disabled so an ambiguous response cannot silently spend twice.

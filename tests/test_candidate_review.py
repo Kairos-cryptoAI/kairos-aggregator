@@ -136,7 +136,7 @@ class _Gateway:
         return LLMResult(
             content=content,
             parsed=self.parsed,
-            model=("gpt-5.6-terra" if workload is LLMWorkload.AGGREGATOR_CONFLICT else "gpt-5.6-luna"),
+            model=("gpt-6-sol" if workload is LLMWorkload.AGGREGATOR_CONFLICT else "gpt-6-luna"),
             effort=("high" if workload is LLMWorkload.AGGREGATOR_CONFLICT else "medium"),
             cost_usd=0.001,
             latency_s=0.25,
@@ -144,9 +144,7 @@ class _Gateway:
             provider="openai",
             request_id="provider-request-1",
             budget_reservation_id="kairos-llm-v1:openai:reservation-1",
-            resolved_model=(
-                "gpt-5.6-terra-2026-08" if workload is LLMWorkload.AGGREGATOR_CONFLICT else "gpt-5.6-luna"
-            ),
+            resolved_model=("gpt-6-sol" if workload is LLMWorkload.AGGREGATOR_CONFLICT else "gpt-6-luna"),
         )
 
     async def close(self) -> None:
@@ -188,7 +186,7 @@ async def test_normal_review_preserves_intent_and_complete_paid_provenance() -> 
     assert review.reviewer == "LLM"
     assert review.model_provenance is not None
     assert review.model_provenance.provider == "openai"
-    assert review.model_provenance.model == "gpt-5.6-luna"
+    assert review.model_provenance.model == "gpt-6-luna"
     assert review.model_provenance.request_id == "provider-request-1"
     assert review.model_provenance.budget_reservation_id.endswith("reservation-1")
     assert review.model_provenance.latency_ms == 250
@@ -196,7 +194,7 @@ async def test_normal_review_preserves_intent_and_complete_paid_provenance() -> 
 
 
 @pytest.mark.asyncio
-async def test_conflict_route_uses_terra_workload_without_parameter_output() -> None:
+async def test_conflict_route_uses_sol_workload_without_parameter_output() -> None:
     gateway = _Gateway(parsed={"decision": "VETO", "priority": 99, "reason_codes": ["NEWS_CONFLICT"]})
     route = _route(tier=CandidateReviewTier.CONFLICT)
     brain = CandidateReviewBrain(
@@ -209,6 +207,8 @@ async def test_conflict_route_uses_terra_workload_without_parameter_output() -> 
 
     assert review.decision is ReviewDecision.VETO
     assert review.intent.exit_plan == route.intent.exit_plan
+    assert review.model_provenance is not None
+    assert review.model_provenance.model == "gpt-6-sol"
     assert gateway.calls[0]["workload"] is LLMWorkload.AGGREGATOR_CONFLICT
     assert set(gateway.calls[0]["schema"].model_fields) == {
         "decision",
