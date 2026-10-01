@@ -146,7 +146,7 @@ def test_planned_cost_reserves_each_active_review_route(monkeypatch: pytest.Monk
     corpus, _digest = load_corpus()
     model_cases = [case for case in corpus.cases if case.expected_model_call]
     expected_models = [
-        "gpt-6-sol" if case.review_tier is CandidateReviewTier.CONFLICT else "gpt-6-luna"
+        "gpt-6.1-sol" if case.review_tier is CandidateReviewTier.CONFLICT else "gpt-6-luna"
         for case in model_cases
     ]
 
