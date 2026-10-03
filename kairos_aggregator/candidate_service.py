@@ -8,7 +8,7 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 
 from kairos_core import canonical_sha256
-from kairos_core.bus import BusEnvelope, build_bus
+from kairos_core.bus import BusEnvelope, MessageBus, build_bus
 from kairos_core.contracts import CandidateReviewV1, CandidateRouteV1, LLMHealthEvent, SentimentSignal
 from kairos_core.enums import CandidateReviewTier, SystemMode
 from kairos_core.logging import configure_logging, get_logger
@@ -32,15 +32,19 @@ class CandidateReviewService:
         settings: AggregatorSettings | None = None,
         *,
         gateway=None,
+        bus: MessageBus | None = None,
         clock_ms: Callable[[], int] | None = None,
     ) -> None:
         self.settings = settings or AggregatorSettings()
-        transport = build_bus(self.settings)
-        self.bus = (
-            transport
-            if self.settings.bus_backend == "memory"
-            else DurableMessageBus(transport, service_name=f"{self.settings.service_name}-candidate")
-        )
+        if bus is not None:
+            self.bus = bus
+        else:
+            transport = build_bus(self.settings)
+            self.bus = (
+                transport
+                if self.settings.bus_backend == "memory"
+                else DurableMessageBus(transport, service_name=f"{self.settings.service_name}-candidate")
+            )
         if gateway is None:
             from kairos_llm import (
                 BudgetedLLMGateway,

@@ -41,6 +41,23 @@ ROUTED_MS = DECISION_MS + 100
 DEADLINE_MS = ROUTED_MS + 20_000
 
 
+def test_explicit_candidate_bus_avoids_default_transport(monkeypatch):
+    from kairos_core.bus import InMemoryBus
+
+    def forbidden(_settings):
+        raise AssertionError("default transport must not be constructed")
+
+    monkeypatch.setattr("kairos_aggregator.candidate_service.build_bus", forbidden)
+    bus = InMemoryBus()
+    service = CandidateReviewService(
+        AggregatorSettings(_env_file=None, bus_backend="memory"),
+        bus=bus,
+        gateway=object(),
+        clock_ms=lambda: ROUTED_MS,
+    )
+    assert service.bus is bus
+
+
 def _intent(**overrides: object) -> StrategyIntentV1:
     values: dict[str, object] = {
         "source": "strategy-engine",
