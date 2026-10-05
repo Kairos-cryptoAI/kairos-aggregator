@@ -15,19 +15,25 @@ Run `uv run --locked kairos-candidate-review` for the Strategy Parity/shadow
 consumer:
 
 ```text
-kairos.strategy.route.v1 -> Candidate Review -> kairos.strategy.review.v1
+kairos.strategy.route.v1 -> DecisionContext v1 -> Candidate Review -> kairos.aggregator.review.v1
 ```
 
 - The complete Strategy Intent is carried into the review unchanged; strict
   contracts reject any mutation of side, stop, target, timeout or provenance.
 - The model schema contains only `decision`, `priority` and `reason_codes`.
-  Normal routes use GPT-6 Luna/medium and conflict routes use GPT-6 Sol/high.
+  Normal routes use GPT-6 Luna/medium and conflict routes use GPT-6.1 Sol/high.
 - Missing, stale or post-route evidence, disabled system modes, malformed output,
   provider errors, incomplete paid-call provenance and missed deadlines terminate
   the current intent as deterministic `DEFER` without an automatic second call.
 - Every successful LLM review records provider request ID, resolved model,
   prompt/response hashes, durable budget reservation, latency and cost.
 - A publish retry reuses the cached review and never calls the model again.
+
+The ordinary service requires a versioned immutable receive-time context with
+real compact market features and exact declared closed-bar evidence. Missing
+mandatory context fails closed before model dispatch; optional text/macro absence
+is explicit `UNAVAILABLE`. See [DecisionContext v1](docs/DECISION-CONTEXT-v1.md)
+for causal clocks, bounded-tail scope, retry and qualification limitations.
 
 The candidate service enforces the qualification ceilings on the shared durable
 ledger: OpenAI `$12` and DeepSeek `$1`. The remaining `$2` X allocation is owned by
@@ -36,8 +42,11 @@ no LLM call.
 
 ## Frozen-corpus shadow qualification
 
-`kairos-candidate-qualify` replays the packaged V1 corpus through the real candidate
-service boundary. The corpus covers normal support, a material conflict, untrusted
+`kairos-candidate-qualify` replays the packaged historical V1 corpus through the real candidate
+service boundary. **This legacy corpus is incompatible with the current required
+DecisionContext boundary**: it has no real market/bar context, so the unchanged
+runner returns `FAIL` (exit 2) without model dispatch. Existing historical PASS
+receipts do not qualify this new source identity. The corpus covers normal support, a material conflict, untrusted
 prompt injection, a forbidden symbol, stale evidence, missing evidence and evidence
 that postdates the frozen route. It requires strict output, an unchanged intent,
 deadline completion, complete paid-call provenance and zero `ALLOW` decisions on
@@ -50,20 +59,10 @@ uv run --locked kairos-candidate-qualify --static \
   --output /tmp/kairos-candidate-harness.json
 ```
 
-A real provider run additionally requires OpenAI, Redis and PostgreSQL one-value
-secret files. It reserves every GPT-6 Luna/Sol call in the shared durable
-`kairos-llm-v1/openai` ledger before network access and refuses a planned run above
-the configured ceiling (default `$0.10`, hard maximum `$0.25`). Reports are atomic,
-contain no prompts or credentials and always set `live_orders_allowed=false`:
-
-```sh
-uv run --locked kairos-candidate-qualify \
-  --openai-key-file /run/secrets/openai_api_key \
-  --redis-url-file /run/secrets/redis_url \
-  --database-url-file /run/secrets/persistence_database_url \
-  --maximum-planned-cost-usd 0.10 \
-  --output /tmp/kairos-candidate-live.json
-```
+Reports remain atomic, contain no prompts or credentials and always set
+`live_orders_allowed=false`. A new context-aware versioned qualification corpus
+and receipt are future gated work; this change does not alter the frozen corpus
+or evaluator and does not authorize a paid qualification run.
 
 Use repeatable `--case CASE_ID` selectors after a failed run so a diagnostic retry
 cannot spend on cases that already passed. High-reasoning conflict qualification

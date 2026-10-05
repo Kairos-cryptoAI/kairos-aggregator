@@ -25,7 +25,7 @@ from kairos_aggregator.shadow_qualification import (
 NOW_MS = 1_900_000_000_000
 
 
-async def test_packaged_corpus_passes_network_free_safety_harness() -> None:
+async def test_legacy_packaged_corpus_is_incompatible_with_required_causal_context() -> None:
     corpus, digest = load_corpus()
     report = await qualify_candidate_corpus(
         corpus,
@@ -36,7 +36,7 @@ async def test_packaged_corpus_passes_network_free_safety_harness() -> None:
         now_ms=NOW_MS,
     )
 
-    assert report.status is QualificationStatus.PASS
+    assert report.status is QualificationStatus.FAIL
     assert report.live_orders_allowed is False
     assert len(report.observations) == 7
     assert all(item.intent_preserved and item.deadline_met for item in report.observations)
@@ -44,12 +44,13 @@ async def test_packaged_corpus_passes_network_free_safety_harness() -> None:
         item.decision != "ALLOW" for item in report.observations if item.category == "deterministic_forbidden"
     )
     model_cases = [item for item in report.observations if item.model_called]
-    assert len(model_cases) == 3
-    assert all(item.model_schema_valid is True for item in model_cases)
+    assert model_cases == []
+    assert all(item.decision == "DEFER" for item in report.observations)
+    assert any("model_call_expectation_mismatch" in item.reasons for item in report.observations)
     assert all(item.cost_usd == 0 for item in report.observations)
 
 
-async def test_targeted_case_replay_calls_only_the_requested_workload() -> None:
+async def test_targeted_legacy_case_replay_is_not_qualified_and_never_calls_model() -> None:
     corpus, digest = load_corpus()
     report = await qualify_candidate_corpus(
         corpus,
@@ -61,7 +62,8 @@ async def test_targeted_case_replay_calls_only_the_requested_workload() -> None:
         selected_case_ids=("conflict_official_invalidation",),
     )
     assert [item.case_id for item in report.observations] == ["conflict_official_invalidation"]
-    assert report.observations[0].model_called is True
+    assert report.status is QualificationStatus.FAIL
+    assert report.observations[0].model_called is False
     with pytest.raises(ValueError, match="unknown corpus case"):
         planned_cost_ceiling_usd(corpus, ("unknown",))
 
@@ -77,7 +79,11 @@ def test_conflict_fixture_materializes_the_declared_long_candidate() -> None:
 
 
 class _UnsafeGateway:
+    def __init__(self) -> None:
+        self.calls = 0
+
     async def complete(self, **_kwargs) -> LLMResult:
+        self.calls += 1
         parsed = CandidateReviewOutput.model_validate(
             {"decision": "ALLOW", "priority": 100, "reason_codes": ["ALLOW"]}
         )
@@ -96,11 +102,12 @@ class _UnsafeGateway:
         )
 
 
-async def test_corpus_guard_defers_unsafe_conflict_allow_without_extra_model_calls() -> None:
+async def test_missing_context_rejects_legacy_corpus_before_even_an_unsafe_stub_call() -> None:
     corpus, digest = load_corpus()
+    gateway = _UnsafeGateway()
     report = await qualify_candidate_corpus(
         corpus,
-        _UnsafeGateway(),
+        gateway,
         mode="LIVE",
         corpus_sha256=digest,
         planned_cost_ceiling_usd=1.0,
@@ -108,12 +115,13 @@ async def test_corpus_guard_defers_unsafe_conflict_allow_without_extra_model_cal
         now_ms=NOW_MS,
     )
 
-    assert report.status is QualificationStatus.PASS
+    assert report.status is QualificationStatus.FAIL
     conflict = next(item for item in report.observations if item.category == "conflict")
     assert conflict.decision == "DEFER"
-    assert conflict.reasons == ()
+    assert "model_call_expectation_mismatch" in conflict.reasons
     deterministic = [item for item in report.observations if not item.model_called]
-    assert len(deterministic) == 4
+    assert len(deterministic) == 7
+    assert gateway.calls == 0
 
 
 def test_corpus_validation_rejects_missing_required_category_and_duplicate_id() -> None:
@@ -157,9 +165,9 @@ def test_planned_cost_reserves_each_active_review_route(monkeypatch: pytest.Monk
 
 def test_atomic_report_writer_and_static_cli(tmp_path: Path) -> None:
     output = tmp_path / "candidate.json"
-    assert main(["--static", "--output", str(output)]) == 0
+    assert main(["--static", "--output", str(output)]) == 2
     payload = json.loads(output.read_text(encoding="utf-8"))
-    assert payload["status"] == "PASS"
+    assert payload["status"] == "FAIL"
     assert payload["mode"] == "STATIC_HARNESS"
     assert payload["live_orders_allowed"] is False
     rendered = json.dumps(payload).casefold()

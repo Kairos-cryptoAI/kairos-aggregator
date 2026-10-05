@@ -350,7 +350,7 @@ def test_context_escapes_untrusted_evidence_and_keeps_immutable_identity() -> No
 async def test_service_missing_evidence_defers_without_paid_call_and_deduplicates() -> None:
     gateway = _Gateway()
     service = CandidateReviewService(
-        AggregatorSettings(bus_backend="memory"),
+        AggregatorSettings(_env_file=None, bus_backend="memory"),
         gateway=gateway,
         clock_ms=_Clock(ROUTED_MS + 5),
     )
@@ -363,18 +363,24 @@ async def test_service_missing_evidence_defers_without_paid_call_and_deduplicate
     await service._handle_route(envelope)
 
     assert gateway.calls == []
-    assert len(bus.published) == 1
-    topic, review = bus.published[0]
+    assert len(bus.published) == 2
+    context_topic, context = bus.published[0]
+    assert context_topic == Topics.DECISION_CONTEXT
+    assert (
+        next(source for source in context.sources if source.kind == "text").reason_code
+        == "EVIDENCE_UNAVAILABLE"
+    )
+    topic, review = bus.published[1]
     assert topic == Topics.CANDIDATE_REVIEW
     assert review.decision is ReviewDecision.DEFER
-    assert review.reason_codes == ("EVIDENCE_UNAVAILABLE",)
+    assert review.reason_codes == ("CONTEXT_REQUIRED_CLOSED_BARS_UNAVAILABLE",)
 
 
 @pytest.mark.asyncio
-async def test_service_exact_evidence_can_produce_review_and_publish_retry_is_stable() -> None:
+async def test_legacy_text_alone_cannot_bypass_context_and_publish_retry_is_stable() -> None:
     gateway = _Gateway()
     service = CandidateReviewService(
-        AggregatorSettings(bus_backend="memory"),
+        AggregatorSettings(_env_file=None, bus_backend="memory"),
         gateway=gateway,
         clock_ms=_Clock(ROUTED_MS + 1, ROUTED_MS + 2),
     )
@@ -389,13 +395,18 @@ async def test_service_exact_evidence_can_produce_review_and_publish_retry_is_st
     bus.fail_publish = True
     with pytest.raises(RuntimeError, match="publish failed"):
         await service._handle_route(envelope)
-    cached_review = service._review_cache[route.route_id]
+    cached_context = service._context_cache[route.route_id]
+    assert service._review_cache == {}
+    assert gateway.calls == []
 
     bus.fail_publish = False
     await service._handle_route(envelope)
 
-    assert len(gateway.calls) == 1
-    assert bus.published == [(Topics.CANDIDATE_REVIEW, cached_review)]
+    assert gateway.calls == []
+    assert bus.published[0] == (Topics.DECISION_CONTEXT, cached_context)
+    topic, review = bus.published[1]
+    assert topic == Topics.CANDIDATE_REVIEW
+    assert review.reason_codes == ("CONTEXT_REQUIRED_CLOSED_BARS_UNAVAILABLE",)
 
 
 def test_shadow_service_uses_exact_qualification_budget_caps() -> None:

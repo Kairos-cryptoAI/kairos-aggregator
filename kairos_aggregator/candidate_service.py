@@ -9,7 +9,8 @@ from collections.abc import Awaitable, Callable
 
 from kairos_core import canonical_sha256
 from kairos_core.bus import BusEnvelope, MessageBus, build_bus
-from kairos_core.contracts import CandidateReviewV1, CandidateRouteV1, LLMHealthEvent, SentimentSignal
+from kairos_core.contracts import CandidateReviewV1, CandidateRouteV1, LLMHealthEvent
+from kairos_core.contracts.decision_context import ContextSourceKind, DecisionContextV1
 from kairos_core.enums import CandidateReviewTier, SystemMode
 from kairos_core.logging import configure_logging, get_logger
 from kairos_core.topics import Topics
@@ -17,6 +18,7 @@ from kairos_persistence import DurableLLMUsageBudget, DurableMessageBus
 
 from .candidate_review import CandidateReviewBrain, deterministic_defer
 from .config import AggregatorSettings
+from .decision_context import CandidateContextStore
 
 log = get_logger("candidate-review")
 
@@ -25,7 +27,7 @@ DEEPSEEK_SHADOW_BUDGET_MICROUSD = 1_000_000
 
 
 class CandidateReviewService:
-    """Consume immutable routes and emit one terminal review for each intent."""
+    """Freeze causal evidence before model dispatch; never invent a trading intent."""
 
     def __init__(
         self,
@@ -75,10 +77,14 @@ class CandidateReviewService:
             clock_ms=self._clock_ms,
         )
         self.system_mode = SystemMode.NORMAL
-        self._sentiments: OrderedDict[str, SentimentSignal] = OrderedDict()
-        self._sentiment_digests: OrderedDict[str, str] = OrderedDict()
+        self.context_store = CandidateContextStore(self.settings)
+        self._route_digests: OrderedDict[str, str] = OrderedDict()
+        self._route_messages: OrderedDict[str, str] = OrderedDict()
+        self._route_cutoffs: OrderedDict[str, int] = OrderedDict()
+        self._context_cache: OrderedDict[str, DecisionContextV1] = OrderedDict()
         self._processed_routes: OrderedDict[str, None] = OrderedDict()
         self._review_cache: OrderedDict[str, CandidateReviewV1] = OrderedDict()
+        self._route_lock = asyncio.Lock()
         self._closed = False
 
     def _remember(self, cache: OrderedDict, key: str, value) -> None:
@@ -119,20 +125,23 @@ class CandidateReviewService:
                     attempt=envelope.attempt,
                 )
 
+    def _receive_source(self, kind: ContextSourceKind, envelope: BusEnvelope, expected_topic: str) -> None:
+        if envelope.topic != expected_topic:
+            raise ValueError("context source arrived on the wrong topic")
+        # Envelope metadata and producer timestamps cannot attest past availability.
+        self.context_store.ingest(kind, envelope.payload, received_at_ms=self._clock_ms())
+
     async def _handle_sentiment(self, envelope: BusEnvelope) -> None:
-        signal = SentimentSignal.model_validate(envelope.payload)
-        observed_at_ms = int(signal.produced_at.timestamp() * 1_000)
-        if observed_at_ms > self._clock_ms() + int(self.settings.max_future_skew_s * 1_000):
-            log.warning("candidate_review.sentiment_from_future", message_id=signal.message_id)
-            return
-        digest = canonical_sha256(signal)
-        existing = self._sentiment_digests.get(signal.message_id)
-        if existing is not None:
-            if existing != digest:
-                raise ValueError(f"sentiment message_id {signal.message_id!r} was reused")
-            return
-        self._remember(self._sentiments, signal.message_id, signal)
-        self._remember(self._sentiment_digests, signal.message_id, digest)
+        self._receive_source("text", envelope, Topics.SENTIMENT_SIGNAL)
+
+    async def _handle_market(self, envelope: BusEnvelope) -> None:
+        self._receive_source("market", envelope, Topics.MARKET_SNAPSHOT)
+
+    async def _handle_closed_bar(self, envelope: BusEnvelope) -> None:
+        self._receive_source("closed_bars", envelope, Topics.CLOSED_BAR)
+
+    async def _handle_macro(self, envelope: BusEnvelope) -> None:
+        self._receive_source("macro", envelope, Topics.STRATEGIC_ALLOCATION)
 
     async def _handle_control(self, envelope: BusEnvelope) -> None:
         mode_value = envelope.payload.get("mode")
@@ -141,28 +150,41 @@ class CandidateReviewService:
         self.system_mode = SystemMode(mode_value)
 
     async def _handle_route(self, envelope: BusEnvelope) -> None:
+        received_at_ms = self._clock_ms()
+        async with self._route_lock:
+            await self._review_route(envelope, received_at_ms=received_at_ms)
+
+    async def _review_route(self, envelope: BusEnvelope, *, received_at_ms: int) -> None:
+        if envelope.topic != Topics.STRATEGY_ROUTE:
+            raise ValueError("candidate route arrived on the wrong topic")
         route = CandidateRouteV1.model_validate(envelope.payload)
         route_id = route.route_id
         if route_id is None:  # impossible after strict contract validation
             raise ValueError("candidate route has no canonical identity")
+        digest = canonical_sha256(route)
+        for existing in (self._route_digests.get(route_id), self._route_messages.get(route.message_id)):
+            if existing is not None and existing != digest:
+                raise ValueError("candidate route identity was reused with conflicting content")
+        self._remember(self._route_digests, route_id, digest)
+        self._remember(self._route_messages, route.message_id, digest)
         if route_id in self._processed_routes:
             return
 
+        context = self._context_cache.get(route_id)
         cached = self._review_cache.get(route_id)
         if cached is not None:
+            if context is None and any(item.kind == "decision_context" for item in cached.evidence):
+                raise ValueError("cached review lost its original immutable context")
+            if context is not None and self.context_store.integrity_error(context):
+                raise ValueError("cached review context has a conflicting source identity")
+            if context is not None:
+                await self.bus.publish(Topics.DECISION_CONTEXT, context)
             await self.bus.publish(Topics.CANDIDATE_REVIEW, cached)
             self._remember(self._processed_routes, route_id, None)
             self._review_cache.pop(route_id, None)
             return
 
-        selected = tuple(
-            self._sentiments[message_id]
-            for message_id in route.evidence_ids
-            if message_id in self._sentiments
-        )
-        missing_ids = tuple(
-            message_id for message_id in route.evidence_ids if message_id not in self._sentiments
-        )
+        captured_at_ms = self._clock_ms()
         reason: str | None = None
         if not self.settings.symbol_allowed(route.intent.symbol):
             reason = "SYMBOL_NOT_ALLOWED"
@@ -172,31 +194,54 @@ class CandidateReviewService:
             self.system_mode is SystemMode.CONFLICT_SAFE and route.review_tier is CandidateReviewTier.CONFLICT
         ):
             reason = "CONFLICT_REVIEW_DISABLED"
-        elif missing_ids:
-            reason = "EVIDENCE_UNAVAILABLE"
-        else:
-            routed_at_ms = route.routed_at_ms
-            for signal in selected:
-                observed_at_ms = int(signal.produced_at.timestamp() * 1_000)
-                if observed_at_ms > routed_at_ms:
-                    reason = "EVIDENCE_POSTDATES_ROUTE"
-                    break
-                if routed_at_ms - observed_at_ms > int(self.settings.sentiment_ttl_s * 1_000):
-                    reason = "EVIDENCE_STALE"
-                    break
+        elif received_at_ms < route.routed_at_ms:
+            reason = "ROUTE_FROM_FUTURE"
+        elif captured_at_ms > route.review_deadline_ms:
+            reason = "REVIEW_DEADLINE_EXCEEDED"
 
+        if reason is None and context is None:
+            if route_id in self._route_cutoffs:
+                # Cache eviction cannot silently create a new evidence cut on retry.
+                reason = "DECISION_CONTEXT_EVICTED"
+            else:
+                self._remember(self._route_cutoffs, route_id, received_at_ms)
+                try:
+                    context = self.context_store.build(
+                        route,
+                        cutoff_ms=received_at_ms,
+                        captured_at_ms=captured_at_ms,
+                    )
+                except (ValueError, KeyError, TypeError):
+                    reason = "DECISION_CONTEXT_INVALID"
+                else:
+                    self._remember(self._context_cache, route_id, context)
+
+        if context is not None:
+            # An unsuccessful context publication must never spend model budget.
+            # The exact frozen context survives a publish retry; late evidence cannot upgrade it.
+            await self.bus.publish(Topics.DECISION_CONTEXT, context)
+            if self.context_store.integrity_error(context):
+                reason = "DECISION_CONTEXT_IDENTITY_CONFLICT"
         review = (
             deterministic_defer(
                 route,
-                reviewed_at_ms=self._clock_ms(),
+                reviewed_at_ms=received_at_ms,
                 reason_code=reason,
                 source=self.settings.service_name,
-                evidence=selected,
+                decision_context=context,
             )
             if reason is not None
-            else await self.brain.review(route, selected)
+            else await self.brain.review_with_context(route, context)
         )
-        if review.intent.intent_id != route.intent.intent_id:
+        if context is not None and self.context_store.integrity_error(context):
+            review = deterministic_defer(
+                route,
+                reviewed_at_ms=self._clock_ms(),
+                reason_code="DECISION_CONTEXT_IDENTITY_CONFLICT",
+                source=self.settings.service_name,
+                decision_context=context,
+            )
+        if review.intent.model_dump(mode="json") != route.intent.model_dump(mode="json"):
             raise ValueError("candidate review mutated the immutable strategy intent")
         self._remember(self._review_cache, route_id, review)
         await self.bus.publish(Topics.CANDIDATE_REVIEW, review)
@@ -217,6 +262,15 @@ class CandidateReviewService:
             consumer="sentiment",
             handler=self._handle_sentiment,
         )
+
+    async def _track_market(self) -> None:
+        await self._consume(Topics.MARKET_SNAPSHOT, consumer="market", handler=self._handle_market)
+
+    async def _track_closed_bars(self) -> None:
+        await self._consume(Topics.CLOSED_BAR, consumer="closed-bars", handler=self._handle_closed_bar)
+
+    async def _track_macro(self) -> None:
+        await self._consume(Topics.STRATEGIC_ALLOCATION, consumer="macro", handler=self._handle_macro)
 
     async def _track_control(self) -> None:
         await self._consume(
@@ -252,6 +306,9 @@ class CandidateReviewService:
             log.info("candidate_review.start")
             async with asyncio.TaskGroup() as tasks:
                 tasks.create_task(self._track_sentiments(), name="candidate-sentiments")
+                tasks.create_task(self._track_market(), name="candidate-market")
+                tasks.create_task(self._track_closed_bars(), name="candidate-closed-bars")
+                tasks.create_task(self._track_macro(), name="candidate-macro")
                 tasks.create_task(self._track_control(), name="candidate-control")
                 tasks.create_task(self._review_routes(), name="candidate-routes")
         finally:
