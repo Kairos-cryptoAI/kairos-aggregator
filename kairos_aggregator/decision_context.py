@@ -101,9 +101,6 @@ class CandidateContextStore:
                 self.quarantined_kinds.add(kind)
                 raise ValueError("context source message identity conflict")
             return  # Never replace the first receipt clock during replay.
-        self._digests[key] = digest
-        while len(self._digests) > self.settings.processed_cache_size:
-            self._digests.popitem(last=False)
         produced = _timestamp(message.produced_at)
         event = message.close_time_ms if isinstance(message, ClosedBarEventV1) else produced
         if produced > received_at_ms or event > received_at_ms or event > produced:
@@ -125,9 +122,6 @@ class CandidateContextStore:
                 raise ValueError("context source closed-bar coordinate conflict")
             if message.bar_sha256 is None:  # impossible for a validated bar
                 raise ValueError("closed-bar source has no canonical identity")
-            self._bar_slots[slot] = message.bar_sha256
-            while len(self._bar_slots) > self.settings.processed_cache_size:
-                self._bar_slots.popitem(last=False)
         ttl = {
             "market": self.settings.snapshot_ttl_s,
             "text": self.settings.sentiment_ttl_s,
@@ -149,6 +143,15 @@ class CandidateContextStore:
                 ttl_ms=int(ttl * 1_000),
             ),
         )
+        # A rejected delivery must not claim an identity, receipt, or bar slot,
+        # or evict accepted evidence. Only successful validation is replayable.
+        self._digests[key] = digest
+        if isinstance(message, ClosedBarEventV1) and message.bar_sha256 is not None:
+            self._bar_slots[(message.symbol, message.open_time_ms)] = message.bar_sha256
+        while len(self._digests) > self.settings.processed_cache_size:
+            self._digests.popitem(last=False)
+        while len(self._bar_slots) > self.settings.processed_cache_size:
+            self._bar_slots.popitem(last=False)
         self._entries[key] = observed
         while len(self._entries) > self.settings.processed_cache_size:
             self._entries.popitem(last=False)

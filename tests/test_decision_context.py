@@ -296,8 +296,101 @@ def test_future_sources_are_rejected_at_actual_local_receipt(kind: str) -> None:
     raw = message.to_payload()
     raw["produced_at"] = datetime_from_unix_ms(RECEIVED_MS + 1).isoformat().replace("+00:00", "Z")
     store = CandidateContextStore(_settings())
+    for _attempt in range(3):
+        with pytest.raises(ValueError, match="future"):
+            store.ingest(kind, raw, received_at_ms=RECEIVED_MS)
+        assert not store._digests
+        assert not store._entries
+        assert not store._bar_slots
+
+
+@pytest.mark.parametrize("kind", ["market", "closed_bars", "text", "macro"])
+def test_failed_first_delivery_does_not_claim_a_receipt_or_block_later_valid_delivery(kind: str) -> None:
+    message = {"market": _market(), "closed_bars": _bars()[0], "text": _text(), "macro": _macro()}[kind]
+    raw = message.to_payload()
+    raw["produced_at"] = datetime_from_unix_ms(RECEIVED_MS + 1).isoformat().replace("+00:00", "Z")
+    store = CandidateContextStore(_settings())
     with pytest.raises(ValueError, match="future"):
         store.ingest(kind, raw, received_at_ms=RECEIVED_MS)
+    later_receipt = RECEIVED_MS + 10
+    store.ingest(kind, raw, received_at_ms=later_receipt)
+    observed = store._entries[(kind, message.message_id)]
+    assert observed.receipt.received_at_ms == later_receipt
+    assert observed.payload() == raw
+    store.ingest(kind, raw, received_at_ms=later_receipt + 100)
+    assert store._entries[(kind, message.message_id)] is observed
+
+
+@pytest.mark.parametrize("invalid", ["universe", "crossed_book", "negative_weight", "bar_receipt"])
+def test_rejected_source_cannot_mutate_or_evict_accepted_source_caches(invalid: str) -> None:
+    store = CandidateContextStore(_settings(processed_cache_size=1))
+    bar = _bars()[0]
+    store.ingest("closed_bars", bar.to_payload(), received_at_ms=RECEIVED_MS)
+    before = (dict(store._digests), dict(store._bar_slots), dict(store._entries))
+    kind = "market"
+    raw = _market().to_payload()
+    if invalid == "universe":
+        raw["symbol"] = "NOT_IN_UNIVERSE"
+    elif invalid == "crossed_book":
+        raw["order_book"]["best_ask"] = 99.0
+    elif invalid == "negative_weight":
+        kind, raw = "macro", _macro().to_payload()
+        raw["strategy_weights"]["offline-test"] = -0.5
+    else:
+        kind, raw = "closed_bars", bar.to_payload()
+        raw["message_id"] = "invalid-bar-receipt"
+        raw["source"] = " unnormalized-source "
+    for _attempt in range(3):
+        with pytest.raises(ValueError, match="receipt identifiers" if invalid == "bar_receipt" else None):
+            store.ingest(kind, raw, received_at_ms=RECEIVED_MS)
+        assert (dict(store._digests), dict(store._bar_slots), dict(store._entries)) == before
+        assert store.quarantined_kinds == set()
+
+
+def test_closed_bar_coordinate_conflict_quarantines_without_claiming_or_evicting_evidence() -> None:
+    store = CandidateContextStore(_settings(processed_cache_size=1))
+    bar = _bars()[0]
+    store.ingest("closed_bars", bar.to_payload(), received_at_ms=RECEIVED_MS)
+    before = (dict(store._digests), dict(store._bar_slots), dict(store._entries))
+    conflicting = ClosedBarEventV1(
+        **{**bar.to_payload(), "close": 100.75, "message_id": "conflicting-bar", "bar_sha256": None}
+    )
+    for _attempt in range(3):
+        with pytest.raises(ValueError, match="coordinate conflict"):
+            store.ingest("closed_bars", conflicting.to_payload(), received_at_ms=RECEIVED_MS)
+        assert (dict(store._digests), dict(store._bar_slots), dict(store._entries)) == before
+    assert store.quarantined_kinds == {"closed_bars"}
+    source = next(source for source in _context(store).sources if source.kind == "closed_bars")
+    assert source.reason_code == "IDENTITY_CONFLICT"
+    store.ingest("closed_bars", bar.to_payload(), received_at_ms=RECEIVED_MS + 10)
+    assert (dict(store._digests), dict(store._bar_slots), dict(store._entries)) == before
+
+
+async def test_source_consumer_acks_only_after_a_successful_receive_time_validation() -> None:
+    clock = _Clock()
+    message = _market(produced_at=datetime_from_unix_ms(RECEIVED_MS + 1))
+    topic = Topics.MARKET_SNAPSHOT
+
+    class _RetryBus(_Bus):
+        def __init__(self) -> None:
+            super().__init__()
+            self.acked: list[str] = []
+
+        async def subscribe(self, topic, *, group, consumer):
+            for attempt in range(3):
+                if attempt == 2:
+                    clock.now += 10
+                yield BusEnvelope(id=f"delivery-{attempt}", topic=topic, payload=message.to_payload())
+
+        async def ack(self, topic, envelope, *, group):
+            self.acked.append(envelope.id)
+
+    bus = _RetryBus()
+    service = CandidateReviewService(_settings(), gateway=_Gateway(), bus=bus, clock_ms=clock)
+    await service._consume(topic, consumer="offline-retry", handler=service._handle_market)
+    assert bus.acked == ["delivery-2"]
+    observed = service.context_store._entries[("market", message.message_id)]
+    assert observed.receipt.received_at_ms == RECEIVED_MS + 10
 
 
 async def test_service_context_first_exact_sources_and_paid_provenance() -> None:
