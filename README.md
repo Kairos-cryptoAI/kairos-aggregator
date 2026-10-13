@@ -61,8 +61,24 @@ uv run --locked kairos-candidate-qualify --static \
 
 Reports remain atomic, contain no prompts or credentials and always set
 `live_orders_allowed=false`. A new context-aware versioned qualification corpus
-and receipt are future gated work; this change does not alter the frozen corpus
-or evaluator and does not authorize a paid qualification run.
+is maintained separately as V2. The V1 corpus, evaluator, existing historical
+reports and fail-closed expectations remain unchanged.
+
+Run the offline V2 engineering harness with its explicit synthetic local gateway:
+
+```sh
+uv run --locked kairos-candidate-context-qualify-v2 \
+  --output /tmp/kairos-candidate-context-v2.json
+```
+
+V2 delivers typed synthetic market, exact declared closed-bar, routed text and
+macro messages through the current `CandidateReviewService`; the positive cases
+therefore call a local zero-cost gateway only after a complete causal context is
+built. Its report is explicitly `synthetic_local_engineering_only`: it does not
+verify source authenticity, paid/live qualification, production A/B or trading
+readiness. No provider, database, secret or environment-file access occurs in
+this mode. Any real provider qualification remains separately gated work and is
+not authorized by this offline harness.
 
 Use repeatable `--case CASE_ID` selectors after a failed run so a diagnostic retry
 cannot spend on cases that already passed. High-reasoning conflict qualification

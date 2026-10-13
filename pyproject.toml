@@ -41,6 +41,7 @@ kairos-persistence = { git = "https://github.com/Kairos-cryptoAI/kairos-persiste
 kairos-aggregator = "kairos_aggregator.service:main"
 kairos-candidate-review = "kairos_aggregator.candidate_service:main"
 kairos-candidate-qualify = "kairos_aggregator.shadow_qualification:main"
+kairos-candidate-context-qualify-v2 = "kairos_aggregator.context_qualification:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["kairos_aggregator"]
