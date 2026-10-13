@@ -368,10 +368,14 @@ async def qualify_context_corpus(corpus: ContextCorpus, corpus_sha256: str) -> C
             candidate_require_macro_context=True,
             candidate_require_text_context=True,
         )
+
+        def case_clock(now: int = int(sources["now"])) -> int:
+            return now
+
         service = CandidateReviewService(
             settings,
             gateway=gateway,
-            clock_ms=lambda now=sources["now"]: now,
+            clock_ms=case_clock,
         )
         capture = _CaptureBus()
         service.bus = capture  # type: ignore[assignment]
