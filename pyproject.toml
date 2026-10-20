@@ -33,12 +33,12 @@ dev = [
 required-version = "==0.12.3"
 # Keep the transitive runtime foundations aligned with the current source set.
 override-dependencies = [
-    "kairos-core @ git+https://github.com/Kairos-cryptoAI/kairos-core.git@37165e3078b53364513f876f4243357ba19a19ba",
+    "kairos-core @ git+https://github.com/Kairos-cryptoAI/kairos-core.git@d52fd9734a27f76f8e2bdbf053d477b8e04b81c9",
     "kairos-persistence @ git+https://github.com/Kairos-cryptoAI/kairos-persistence.git@2d88a351fc045de5b58bbf6acae209341096a850",
 ]
 
 [tool.uv.sources]
-kairos-core = { git = "https://github.com/Kairos-cryptoAI/kairos-core.git", rev = "37165e3078b53364513f876f4243357ba19a19ba" }
+kairos-core = { git = "https://github.com/Kairos-cryptoAI/kairos-core.git", rev = "d52fd9734a27f76f8e2bdbf053d477b8e04b81c9" }
 kairos-llm = { git = "https://github.com/Kairos-cryptoAI/kairos-llm.git", rev = "f786eb41ad88788d6c0156b4d330981f80c07a7d" }
 kairos-persistence = { git = "https://github.com/Kairos-cryptoAI/kairos-persistence.git", rev = "2d88a351fc045de5b58bbf6acae209341096a850" }
 
