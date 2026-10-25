@@ -156,6 +156,59 @@ class CandidateContextStore:
         while len(self._entries) > self.settings.processed_cache_size:
             self._entries.popitem(last=False)
 
+    def require_retained_observation(
+        self,
+        kind: ContextSourceKind,
+        payload: dict,
+        *,
+        at_ms: int,
+    ) -> DecisionContextReceiptV1:
+        """Return the original receive receipt for an exact still-retained observation.
+
+        This is read-only linkage to this store's native receipt, not raw-source
+        authentication or producer qualification. Expiration uses the original
+        receipt's event time and TTL; this lookup never refreshes clocks or cache
+        state.
+        """
+        if kind not in ("market", "closed_bars"):
+            raise ValueError("retained-observation lookup supports market and closed_bars only")
+        if type(at_ms) is not int or at_ms < 0:
+            raise ValueError("observation lookup time must be a non-negative integer")
+        if not isinstance(payload, dict):
+            raise ValueError("retained observation payload must be an exact native mapping")
+        if kind in self.quarantined_kinds:
+            raise ValueError("retained observation kind is quarantined")
+        try:
+            message = _MODELS[kind].model_validate(payload)
+            normalized = message.model_dump(mode="json")
+            normalized_bytes = canonical_json_bytes(normalized)
+            if normalized_bytes != canonical_json_bytes(payload):
+                raise ValueError
+            digest = canonical_sha256(normalized)
+        except Exception:
+            raise ValueError("retained observation payload is invalid or noncanonical") from None
+
+        key = (kind, message.message_id)
+        observed = self._entries.get(key)
+        stored_digest = self._digests.get(key)
+        if observed is None or stored_digest is None:
+            raise ValueError("retained observation is missing or evicted")
+        if (
+            observed.kind != kind
+            or stored_digest != digest
+            or observed.payload_json.encode("utf-8") != normalized_bytes
+            or observed.receipt.message_id != message.message_id
+            or observed.receipt.source != message.source
+            or observed.receipt.content_sha256 != digest
+        ):
+            raise ValueError("retained observation differs from the original accepted payload")
+        receipt = observed.receipt
+        if receipt.received_at_ms > at_ms or receipt.event_at_ms > at_ms or receipt.produced_at_ms > at_ms:
+            raise ValueError("retained observation receipt is future-dated")
+        if at_ms - receipt.event_at_ms > receipt.ttl_ms:
+            raise ValueError("retained observation receipt has expired")
+        return receipt
+
     def _eligible(self, value: _ObservedSource, *, event_cut: int, cutoff: int, captured: int) -> bool:
         receipt = value.receipt
         return (

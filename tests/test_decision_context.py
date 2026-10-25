@@ -290,6 +290,126 @@ def test_source_replay_preserves_first_receipt_and_conflicting_identity_is_quara
     assert _context(store).missing_required_sources()[0].reason_code == "IDENTITY_CONFLICT"
 
 
+@pytest.mark.parametrize(
+    ("kind", "message"),
+    [("market", _market()), ("closed_bars", _bars()[0])],
+)
+def test_retained_observation_lookup_returns_first_original_receipt(kind: str, message) -> None:
+    store = CandidateContextStore(_settings())
+    payload = message.to_payload()
+    store.ingest(kind, payload, received_at_ms=RECEIVED_MS)
+    first = store._entries[(kind, message.message_id)].receipt
+    store.ingest(kind, payload, received_at_ms=RECEIVED_MS + 100)
+    before = (tuple(store._entries.items()), tuple(store._digests.items()), tuple(store._bar_slots.items()))
+
+    receipt = store.require_retained_observation(kind, payload, at_ms=RECEIVED_MS + 100)
+
+    assert receipt is first
+    assert receipt.received_at_ms == RECEIVED_MS
+    assert (
+        tuple(store._entries.items()),
+        tuple(store._digests.items()),
+        tuple(store._bar_slots.items()),
+    ) == before
+
+
+def _retained_cache_state(store: CandidateContextStore):
+    return (
+        tuple(store._entries.items()),
+        tuple(store._digests.items()),
+        tuple(store._bar_slots.items()),
+        frozenset(store.quarantined_kinds),
+    )
+
+
+@pytest.mark.parametrize("at_ms", [True, -1, 1.5, None])
+def test_retained_observation_lookup_rejects_invalid_time_without_mutation(at_ms) -> None:
+    store = _store()
+    before = _retained_cache_state(store)
+    with pytest.raises(ValueError, match="lookup time"):
+        store.require_retained_observation("market", _market().to_payload(), at_ms=at_ms)
+    assert _retained_cache_state(store) == before
+
+
+@pytest.mark.parametrize("change", ["payload", "message_id", "source"])
+def test_retained_observation_lookup_rejects_substitutions_without_mutation(change: str) -> None:
+    store = _store()
+    payload = _market().to_payload()
+    if change == "payload":
+        payload["mid_price"] = 101.0
+    elif change == "message_id":
+        payload["message_id"] = "other-market-id"
+    else:
+        payload["source"] = "other-market-source"
+    before = _retained_cache_state(store)
+
+    with pytest.raises(ValueError, match="missing|differs"):
+        store.require_retained_observation("market", payload, at_ms=RECEIVED_MS)
+
+    assert _retained_cache_state(store) == before
+
+
+@pytest.mark.parametrize("time_mode", ["receipt_future", "expired"])
+def test_retained_observation_lookup_rejects_future_or_expired_receipt_without_mutation(
+    time_mode: str,
+) -> None:
+    store = _store()
+    payload = _market().to_payload()
+    original = store._entries[("market", "market-1")].receipt
+    at_ms = RECEIVED_MS - 1 if time_mode == "receipt_future" else original.event_at_ms + original.ttl_ms + 1
+    before = _retained_cache_state(store)
+
+    with pytest.raises(ValueError, match="future-dated|expired"):
+        store.require_retained_observation("market", payload, at_ms=at_ms)
+
+    assert _retained_cache_state(store) == before
+
+
+def test_retained_observation_lookup_rejects_quarantined_kind_without_mutation() -> None:
+    store = _store()
+    with pytest.raises(ValueError, match="identity conflict"):
+        store.ingest("market", _market(mid_price=101.0).to_payload(), received_at_ms=RECEIVED_MS + 1)
+    payload = _market().to_payload()
+    before = _retained_cache_state(store)
+
+    with pytest.raises(ValueError, match="quarantined"):
+        store.require_retained_observation("market", payload, at_ms=RECEIVED_MS + 1)
+
+    assert _retained_cache_state(store) == before
+
+
+def test_retained_observation_lookup_rejects_evicted_entry_without_mutation() -> None:
+    store = CandidateContextStore(_settings(processed_cache_size=1))
+    first = _market()
+    store.ingest("market", first.to_payload(), received_at_ms=RECEIVED_MS)
+    store.ingest("market", _market(message_id="market-2").to_payload(), received_at_ms=RECEIVED_MS)
+    before = _retained_cache_state(store)
+
+    with pytest.raises(ValueError, match="missing or evicted"):
+        store.require_retained_observation("market", first.to_payload(), at_ms=RECEIVED_MS)
+
+    assert _retained_cache_state(store) == before
+
+
+def test_retained_observation_lookup_only_accepts_market_and_closed_bars() -> None:
+    store = _store()
+    before = _retained_cache_state(store)
+    with pytest.raises(ValueError, match="supports market and closed_bars only"):
+        store.require_retained_observation("text", _text().to_payload(), at_ms=RECEIVED_MS)
+    assert _retained_cache_state(store) == before
+
+
+def test_retained_observation_lookup_rejects_missing_entry_without_mutation() -> None:
+    store = CandidateContextStore(_settings())
+    payload = _market().to_payload()
+    before = _retained_cache_state(store)
+
+    with pytest.raises(ValueError, match="missing or evicted"):
+        store.require_retained_observation("market", payload, at_ms=RECEIVED_MS)
+
+    assert _retained_cache_state(store) == before
+
+
 @pytest.mark.parametrize("kind", ["market", "closed_bars", "text", "macro"])
 def test_future_sources_are_rejected_at_actual_local_receipt(kind: str) -> None:
     message = {"market": _market(), "closed_bars": _bars()[0], "text": _text(), "macro": _macro()}[kind]
