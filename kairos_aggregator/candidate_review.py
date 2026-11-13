@@ -23,6 +23,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .compiler import calibrated_sentiment, calibrated_text_score
 
 MATERIAL_CONFLICT_SCORE = 0.70
+# The contract's own bound on the closed-bar tail; a declaration this long is rendered whole.
+PROMPT_DECLARED_BAR_LIMIT = 1_440
 
 CANDIDATE_REVIEW_SYSTEM = """You review an immutable futures strategy candidate.
 Return only strict JSON with exactly these fields:
@@ -118,10 +120,40 @@ def compile_candidate_context(
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
 
 
+def _bounded_intent_identity(identity_json: str) -> dict | None:
+    """A prompt view of an intent identity whose declared input exceeds the prompt bound.
+
+    Returns ``None`` when the identity is rendered unchanged.
+    """
+    identity = json.loads(identity_json)
+    declared = identity["provenance"]["input_bar_sha256s"]
+    if len(declared) <= PROMPT_DECLARED_BAR_LIMIT:
+        return None
+    identity["provenance"]["input_bar_sha256s"] = {
+        "rendering": "OMITTED_FROM_PROMPT",
+        "declared_count": len(declared),
+        "first": declared[0],
+        "last": declared[-1],
+    }
+    return identity
+
+
 def compile_decision_context(route: CandidateRouteV1, context: DecisionContextV1) -> str:
-    """Expose exact immutable source content with explicit availability semantics."""
+    """Expose exact immutable source content with explicit availability semantics.
+
+    An intent may declare more input bars than a prompt can carry (a three-week window
+    of one-minute bars is 30 240 hashes, about 2 MB). Above ``PROMPT_DECLARED_BAR_LIMIT``
+    the exact ``intent_identity_json`` is replaced in the prompt by
+    ``intent_identity_bounded``, which names the count and the first and last hash. The
+    context itself, its ``context_id`` and the closed-bar tail are unchanged, and the
+    prompt hash in the review provenance covers what the model actually saw.
+    """
     context.validate_for_route(route)
     payload = context.model_dump(mode="json")
+    bounded = _bounded_intent_identity(context.intent_identity_json)
+    if bounded is not None:
+        payload.pop("intent_identity_json")
+        payload["intent_identity_bounded"] = bounded
     for source, serialized in zip(context.sources, payload["sources"], strict=True):
         serialized.pop("payloads_json")
         serialized["payloads"] = source.payloads()
@@ -396,6 +428,7 @@ class CandidateReviewBrain:
 __all__ = [
     "CANDIDATE_REVIEW_SYSTEM",
     "CAUSAL_CANDIDATE_REVIEW_SYSTEM",
+    "PROMPT_DECLARED_BAR_LIMIT",
     "CandidateReviewBrain",
     "CandidateReviewOutput",
     "compile_candidate_context",

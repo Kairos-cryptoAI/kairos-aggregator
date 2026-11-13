@@ -742,3 +742,64 @@ async def test_service_subscribes_to_source_topics_not_external_context(monkeypa
         Topics.SYSTEM_CONTROL,
         Topics.STRATEGY_ROUTE,
     }
+
+
+def _long_route(declared: int) -> tuple[CandidateRouteV1, tuple[ClosedBarEventV1, ...]]:
+    """A route whose intent declares ``declared`` input bars; only the newest two exist here."""
+    bars = _bars(2)
+    older = tuple(canonical_sha256({"synthetic_bar": index}) for index in range(declared - len(bars)))
+    short = _route(bars).intent
+    identity = short.identity_payload()
+    identity["provenance"]["input_bar_sha256s"] = [*older, *(bar.bar_sha256 for bar in bars)]
+    intent = StrategyIntentV1.model_validate({"source": "strategy-engine", **identity})
+    long_route = CandidateRouteV1(
+        source="router",
+        intent=intent,
+        review_tier=CandidateReviewTier.NORMAL,
+        requested_reasoning_effort=ReasoningEffort.MEDIUM,
+        routed_at_ms=ROUTED_MS,
+        review_deadline_ms=ROUTED_MS + 20_000,
+    )
+    return long_route, bars
+
+
+async def test_long_declared_input_is_bounded_in_the_prompt_but_not_in_the_context() -> None:
+    from kairos_aggregator.candidate_review import PROMPT_DECLARED_BAR_LIMIT
+
+    route, bars = _long_route(30_240)
+    store = _store(settings=_settings(candidate_context_max_bars=2), bars=bars)
+    context = store.build(route, cutoff_ms=RECEIVED_MS, captured_at_ms=RECEIVED_MS)
+    assert len(json.loads(context.intent_identity_json)["provenance"]["input_bar_sha256s"]) == 30_240
+    assert context.missing_required_sources() == ()
+
+    rendered = compile_decision_context(route, context)
+    assert len(rendered) < 20_000, "the prompt does not carry 30 240 hashes"
+    prompt = json.loads(rendered)["decision_context"]
+    assert "intent_identity_json" not in prompt
+    declared = prompt["intent_identity_bounded"]["provenance"]["input_bar_sha256s"]
+    assert declared == {
+        "rendering": "OMITTED_FROM_PROMPT",
+        "declared_count": 30_240,
+        "first": route.intent.provenance.input_bar_sha256s[0],
+        "last": bars[-1].bar_sha256,
+    }
+    assert prompt["intent_identity_bounded"]["reference_price"] == route.intent.reference_price
+    assert prompt["context_id"] == context.context_id
+    closed = next(source for source in prompt["sources"] if source["kind"] == "closed_bars")
+    assert [bar["bar_sha256"] for bar in closed["payloads"]] == [bar.bar_sha256 for bar in bars]
+
+    gateway = _Gateway()
+    review = await CandidateReviewBrain(gateway, clock_ms=_Clock()).review_with_context(route, context)
+    assert review.decision is ReviewDecision.ALLOW and len(gateway.calls) == 1
+    assert gateway.calls[0]["user"] == rendered
+    assert review.model_provenance.prompt_sha256 == canonical_sha256(
+        {"system": gateway.calls[0]["system"], "user": rendered}
+    )
+
+    at_limit, at_limit_bars = _long_route(PROMPT_DECLARED_BAR_LIMIT)
+    small = _store(settings=_settings(candidate_context_max_bars=2), bars=at_limit_bars).build(
+        at_limit, cutoff_ms=RECEIVED_MS, captured_at_ms=RECEIVED_MS
+    )
+    unchanged = json.loads(compile_decision_context(at_limit, small))["decision_context"]
+    assert unchanged["intent_identity_json"] == small.intent_identity_json
+    assert "intent_identity_bounded" not in unchanged

@@ -49,7 +49,16 @@ these local receipt clocks into a durable point-in-time archive attestation.
 The model schema remains only `ALLOW`/`VETO`/`DEFER`, priority and reason codes.
 It cannot alter any trading parameters. Successful paid-call provenance hashes
 the actual context prompt, and every context-backed review references the content-addressed
-context. Risk, venue, execution, `REJECT_ALL`, frozen evaluator and research gates
+context.
+
+The prompt carries the exact `intent_identity_json` while its declared input is at
+most `PROMPT_DECLARED_BAR_LIMIT` (1 440, the contract's own tail bound) bars. A longer
+declaration, such as the 30 240 one-minute bars of a three-week window (about 2 MB),
+is rendered as `intent_identity_bounded`: the same identity with the hash list replaced
+by its count and its first and last hash. The context, its `context_id`, the closed-bar
+tail and every other field are unchanged; the prompt hash records what the model saw.
+Prompts of shorter intents, including every qualification case, are byte-identical to
+the previous rendering. Risk, venue, execution, `REJECT_ALL`, frozen evaluator and research gates
 are unchanged. This is engineering migration evidence, not alpha/profitability,
 production qualification or permission to trade.
 
